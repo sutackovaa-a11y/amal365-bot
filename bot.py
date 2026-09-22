@@ -60,7 +60,6 @@ NEXT_PRAYERS = {
     "isha": None
 }
 
-# Расширенный список похвал
 PRAISES = [
     "Я так рада за вас!",
     "Прекрасный шаг вперед!",
@@ -76,7 +75,6 @@ PRAISES = [
     "Каждое действие имеет огромное значение!"
 ]
 
-# Разнообразные варианты средних фраз
 MIDDLE_PHRASES = [
     "Осталось всего {rem}) Двигаемся по плану.",
     "Ещё {rem} — и день будет закрыт!",
@@ -102,9 +100,8 @@ def get_user(user_id):
     return users[user_id]
 
 def get_unique_praise(user):
-    # Выбирает фразу, которая НЕ совпадала с предыдущей
     available = [p for p in PRAISES if p != user.get("last_praise", "")]
-    praise = random.choice(available)
+    praise = random.choice(available if available else PRAISES)
     user["last_praise"] = praise
     return praise
 
@@ -156,18 +153,20 @@ def get_main_keyboard(user_id):
 
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
-    user = get_user(message.from_user.id)
-    
-    if not user["mode"]:
-        bot.send_message(
-            message.chat.id,
-            "🌙 **Ассаляму алейкум! Добро пожаловать в Амаль 365.**\n\n"
-            "Выберите удобный режим для старта:",
-            reply_markup=get_mode_keyboard(),
-            parse_mode="Markdown"
-        )
-    else:
-        send_daily_tracker(message.chat.id, message.from_user.id)
+    try:
+        user = get_user(message.from_user.id)
+        if not user["mode"]:
+            bot.send_message(
+                message.chat.id,
+                "🌙 **Ассаляму алейкум! Добро пожаловать в Амаль 365.**\n\n"
+                "Выберите удобный режим для старта:",
+                reply_markup=get_mode_keyboard(),
+                parse_mode="Markdown"
+            )
+        else:
+            send_daily_tracker(message.chat.id, message.from_user.id)
+    except Exception as e:
+        print(f"Error in start_cmd: {e}")
 
 def send_daily_tracker(chat_id, user_id):
     user = get_user(user_id)
@@ -180,126 +179,136 @@ def send_daily_tracker(chat_id, user_id):
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
-    user = get_user(call.from_user.id)
-    today = get_today_str()
+    try:
+        user = get_user(call.from_user.id)
+        today = get_today_str()
 
-    if today not in user["history"]:
-        user["history"][today] = set()
+        if today not in user["history"]:
+            user["history"][today] = set()
 
-    if call.data.startswith("set_mode_"):
-        selected_mode = call.data.replace("set_mode_", "")
-        user["mode"] = selected_mode
-        bot.answer_callback_query(call.id, "Режим установлен!")
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        send_daily_tracker(call.message.chat.id, call.from_user.id)
+        if call.data.startswith("set_mode_"):
+            selected_mode = call.data.replace("set_mode_", "")
+            user["mode"] = selected_mode
+            bot.answer_callback_query(call.id, "Режим установлен!")
+            try:
+                bot.delete_message(call.message.chat.id, call.message.message_id)
+            except Exception:
+                pass
+            send_daily_tracker(call.message.chat.id, call.from_user.id)
 
-    elif call.data == "change_mode":
-        bot.edit_message_text(
-            "Выберите удобный режим:",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=get_mode_keyboard()
-        )
+        elif call.data == "change_mode":
+            bot.edit_message_text(
+                "Выберите удобный режим:",
+                call.message.chat.id,
+                call.message.message_id,
+                reply_markup=get_mode_keyboard()
+            )
 
-    elif call.data.startswith("task_"):
-        task = call.data.replace("task_", "")
-        today_completed = user["history"][today]
+        elif call.data.startswith("task_"):
+            task = call.data.replace("task_", "")
+            today_completed = user["history"][today]
 
-        if task in today_completed:
-            today_completed.remove(task)
-            bot.answer_callback_query(call.id, "Отметка снята")
-        else:
-            today_completed.add(task)
-            bot.answer_callback_query(call.id)
-
-            praise = get_unique_praise(user)
-            task_title = TASK_NAMES.get(task, task)
-            active_tasks = MODES[user["mode"]]["tasks"]
-            total_count = len(active_tasks)
-            current_count = len(today_completed)
-            rem = total_count - current_count
-            next_step = NEXT_PRAYERS.get(task)
-
-            if current_count == total_count:
-                finish = random.choice(FINISH_MESSAGES)
-                msg_text = (
-                    f"✅ **{task_title}** — это ваша {current_count}-я галочка!\n\n"
-                    f"{finish}"
-                )
-            elif next_step:
-                middle_tmpl = random.choice(MIDDLE_PHRASES)
-                middle_str = middle_tmpl.format(rem=rem)
-                msg_text = (
-                    f"{praise} Ловите {current_count}-ю галочку ✅ (**{task_title}**).\n\n"
-                    f"{middle_str} "
-                    f"Следующий шаг: **{next_step}**."
-                )
+            if task in today_completed:
+                today_completed.remove(task)
+                bot.answer_callback_query(call.id, "Отметка снята")
             else:
-                msg_text = (
-                    f"{praise} Ловите {current_count}-ю галочку ✅ (**{task_title}**).\n\n"
-                    f"Уже **{current_count} из {total_count}** выполнено!"
+                today_completed.add(task)
+                bot.answer_callback_query(call.id)
+
+                praise = get_unique_praise(user)
+                task_title = TASK_NAMES.get(task, task)
+                active_tasks = MODES[user["mode"]]["tasks"]
+                total_count = len(active_tasks)
+                current_count = len(today_completed)
+                rem = total_count - current_count
+                next_step = NEXT_PRAYERS.get(task)
+
+                if current_count == total_count:
+                    finish = random.choice(FINISH_MESSAGES)
+                    msg_text = (
+                        f"✅ **{task_title}** — это ваша {current_count}-я галочка!\n\n"
+                        f"{finish}"
+                    )
+                elif next_step:
+                    middle_tmpl = random.choice(MIDDLE_PHRASES)
+                    middle_str = middle_tmpl.format(rem=rem)
+                    msg_text = (
+                        f"{praise} Ловите {current_count}-ю галочку ✅ (**{task_title}**).\n\n"
+                        f"{middle_str} "
+                        f"Следующий шаг: **{next_step}**."
+                    )
+                else:
+                    msg_text = (
+                        f"{praise} Ловите {current_count}-ю галочку ✅ (**{task_title}**).\n\n"
+                        f"Уже **{current_count} из {total_count}** выполнено!"
+                    )
+
+                bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
+
+            try:
+                bot.edit_message_reply_markup(
+                    call.message.chat.id,
+                    call.message.message_id,
+                    reply_markup=get_main_keyboard(call.from_user.id)
                 )
+            except Exception:
+                pass
 
-            bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
+        elif call.data == "show_progress":
+            level = calculate_level(user["streak"])
+            mode_title = MODES[user['mode']]['title'] if user['mode'] else "Не выбран"
+            
+            progress_text = (
+                f"📊 **Личный прогресс**\n\n"
+                f"🔥 Серия дней: **{user['streak']} дн.**\n"
+                f"⭐ Уровень: **{level}**\n"
+                f"⚙️ Текущий режим: **{mode_title}**\n\n"
+                f"Никаких рейтингов и сравнений — только ваш личный путь. 🤍"
+            )
+            bot.answer_callback_query(call.id)
+            bot.send_message(call.message.chat.id, progress_text, parse_mode="Markdown")
 
-        bot.edit_message_reply_markup(
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=get_main_keyboard(call.from_user.id)
-        )
+        elif call.data == "show_history":
+            prayer_tasks = {"fajr", "dhuhr", "asr", "maghrib", "isha"}
+            
+            p_7, q_7, b_7, s_7 = 0, 0, 0, 0
+            p_30, q_30, b_30, s_30 = 0, 0, 0, 0
 
-    elif call.data == "show_progress":
-        level = calculate_level(user["streak"])
-        mode_title = MODES[user['mode']]['title'] if user['mode'] else "Не выбран"
-        
-        progress_text = (
-            f"📊 **Личный прогресс**\n\n"
-            f"🔥 Серия дней: **{user['streak']} дн.**\n"
-            f"⭐ Уровень: **{level}**\n"
-            f"⚙️ Текущий режим: **{mode_title}**\n\n"
-            f"Никаких рейтингов и сравнений — только ваш личный путь. 🤍"
-        )
-        bot.answer_callback_query(call.id)
-        bot.send_message(call.message.chat.id, progress_text, parse_mode="Markdown")
+            for i in range(30):
+                date_check = str((datetime.now() - timedelta(days=i)).date())
+                day_tasks = user["history"].get(date_check, set())
 
-    elif call.data == "show_history":
-        prayer_tasks = {"fajr", "dhuhr", "asr", "maghrib", "isha"}
-        
-        p_7, q_7, b_7, s_7 = 0, 0, 0, 0
-        p_30, q_30, b_30, s_30 = 0, 0, 0, 0
+                prayers_done = len(day_tasks.intersection(prayer_tasks))
 
-        for i in range(30):
-            date_check = str((datetime.now() - timedelta(days=i)).date())
-            day_tasks = user["history"].get(date_check, set())
+                p_30 += prayers_done
+                if "quran" in day_tasks: q_30 += 1
+                if "book" in day_tasks: b_30 += 1
+                if "sport" in day_tasks: s_30 += 1
 
-            prayers_done = len(day_tasks.intersection(prayer_tasks))
+                if i < 7:
+                    p_7 += prayers_done
+                    if "quran" in day_tasks: q_7 += 1
+                    if "book" in day_tasks: b_7 += 1
+                    if "sport" in day_tasks: s_7 += 1
 
-            p_30 += prayers_done
-            if "quran" in day_tasks: q_30 += 1
-            if "book" in day_tasks: b_30 += 1
-            if "sport" in day_tasks: s_30 += 1
+            history_text = (
+                f"📅 **История вашей активности:**\n\n"
+                f"🗓 **За 7 дней:**\n"
+                f"🕌 Намазы: **{p_7}/35**\n"
+                f"📖 Коран: **{q_7} дн.**\n"
+                f"📚 Книга: **{b_7} дн.**\n"
+                f"🏃 Спорт: **{s_7} дн.**\n\n"
+                f"📊 **За 30 дней (месяц):**\n"
+                f"🕌 Намазы: **{p_30}/150**\n"
+                f"📖 Коран: **{q_30} дн.**\n"
+                f"📚 Книга: **{b_30} дн.**\n"
+                f"🏃 Спорт: **{s_30} дн.**\n\n"
+                f"Каждый день — это шаг к постоянству! 🤍"
+            )
+            bot.answer_callback_query(call.id)
+            bot.send_message(call.message.chat.id, history_text, parse_mode="Markdown")
+    except Exception as e:
+        print(f"Error in handle_callbacks: {e}")
 
-            if i < 7:
-                p_7 += prayers_done
-                if "quran" in day_tasks: q_7 += 1
-                if "book" in day_tasks: b_7 += 1
-                if "sport" in day_tasks: s_7 += 1
-
-        history_text = (
-            f"📅 **История вашей активности:**\n\n"
-            f"🗓 **За 7 дней:**\n"
-            f"🕌 Намазы: **{p_7}/35**\n"
-            f"📖 Коран: **{q_7} дн.**\n"
-            f"📚 Книга: **{b_7} дн.**\n"
-            f"🏃 Спорт: **{s_7} дн.**\n\n"
-            f"📊 **За 30 дней (месяц):**\n"
-            f"🕌 Намазы: **{p_30}/150**\n"
-            f"📖 Коран: **{q_30} дн.**\n"
-            f"📚 Книга: **{b_30} дн.**\n"
-            f"🏃 Спорт: **{s_30} дн.**\n\n"
-            f"Каждый день — это шаг к постоянству! 🤍"
-        )
-        bot.answer_callback_query(call.id)
-        bot.send_message(call.message.chat.id, history_text, parse_mode="Markdown")
-
-bot.infinity_polling()
+# Бесконечный опрос с защитой от разрыва соединения
+bot.infinity_polling(timeout=10, long_polling_timeout=5)
