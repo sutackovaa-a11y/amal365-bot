@@ -18,27 +18,12 @@ def run_flask():
 
 Thread(target=run_flask, daemon=True).start()
 
-# --- Логика бота Amal 365 ---
-TOKEN = '8944360971:AAFZ3DDUIxEB4AP5KHRZGIVkK-lTXRthvaY'
+# --- Безопасное получение токена из настроек Render ---
+TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-# Хранилище данных пользователей
+# База данных пользователей
 users = {}
-
-MOTIVATION_TEXTS = [
-    "📖 Отмечено. Даже небольшой шаг, сделанный сегодня, лучше больших планов на завтра.",
-    "🌱 Хорошее дело добавлено в сегодняшний день.",
-    "✨ Важный шаг к регулярности выполнен.",
-    "🤲 Отлично. Постоянство — ключ к успеху."
-]
-
-NEXT_PRAYER_GOALS = {
-    "fajr": "🌤 Следующая цель: Зухр",
-    "dhuhr": "☀️ Следующая цель: Аср",
-    "asr": "🌇 Следующая цель: Магриб",
-    "maghrib": "🌙 Следующая цель: Иша",
-    "isha": "✨ Все обязательные намазы на сегодня отмечены!"
-}
 
 MODES = {
     "min": {
@@ -56,14 +41,14 @@ MODES = {
 }
 
 TASK_NAMES = {
-    "fajr": "🌅 Фаджр",
-    "dhuhr": "☀️ Зухр",
-    "asr": "🌤 Аср",
-    "maghrib": "🌆 Магриб",
-    "isha": "🌌 Иша",
-    "quran": "📖 Коран",
-    "sport": "🏃 Спорт",
-    "book": "📚 Книга"
+    "fajr": "Фаджр",
+    "dhuhr": "Зухр",
+    "asr": "Аср",
+    "maghrib": "Магриб",
+    "isha": "Иша",
+    "quran": "Коран",
+    "sport": "Спорт",
+    "book": "Книга"
 }
 
 def get_user(user_id):
@@ -71,21 +56,21 @@ def get_user(user_id):
         users[user_id] = {
             "mode": None,
             "streak": 1,
-            "history": {}  # Структура: {"2026-09-22": {"fajr", "quran"}}
+            "history": {}
         }
     return users[user_id]
 
 def calculate_level(streak_days):
     if streak_days >= 365:
-        return "🤍 Истикама (365+ дн.)"
+        return "🤍 Истикама"
     elif streak_days >= 90:
-        return "🌙 Усердие (90+ дн.)"
+        return "🌙 Усердие"
     elif streak_days >= 30:
-        return "⭐ Собранность (30+ дн.)"
+        return "⭐ Собранность"
     elif streak_days >= 7:
-        return "🌿 Постоянство (7+ дн.)"
+        return "🌿 Постоянство"
     else:
-        return "🌱 Старт (0+ дн.)"
+        return "🌱 Старт"
 
 def get_today_str():
     return str(datetime.now().date())
@@ -129,7 +114,7 @@ def start_cmd(message):
         bot.send_message(
             message.chat.id,
             "🌙 **Ассаляму алейкум! Добро пожаловать в Амаль 365.**\n\n"
-            "Выберите режим для старта:",
+            "Выберите удобный режим для старта:",
             reply_markup=get_mode_keyboard(),
             parse_mode="Markdown"
         )
@@ -171,21 +156,18 @@ def handle_callbacks(call):
     elif call.data.startswith("task_"):
         task = call.data.replace("task_", "")
         today_completed = user["history"][today]
+        task_title = TASK_NAMES.get(task, task)
 
         if task in today_completed:
             today_completed.remove(task)
-            bot.answer_callback_query(call.id, "Отметка снята")
+            # Всплывающее уведомление без отправки отдельного сообщения
+            bot.answer_callback_query(call.id, f"Отметка снята: {task_title}")
         else:
             today_completed.add(task)
-            
-            # Сообщение с подсказкой и следующей целью
-            if task in NEXT_PRAYER_GOALS:
-                msg = NEXT_PRAYER_GOALS[task]
-            else:
-                msg = "🌱 Хорошее дело добавлено в сегодняшний день."
+            # Короткая плашка сверху экрана
+            bot.answer_callback_query(call.id, f"Принято! ✅ ({task_title})")
 
-            bot.answer_callback_query(call.id, msg, show_alert=True)
-
+        # Обновляем состояния кнопок прямо в сообщении
         bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
@@ -207,7 +189,6 @@ def handle_callbacks(call):
         bot.send_message(call.message.chat.id, progress_text, parse_mode="Markdown")
 
     elif call.data == "show_history":
-        # Расчёт статистики за последние 7 дней
         prayers_count = 0
         quran_days = 0
         book_days = 0
@@ -219,7 +200,6 @@ def handle_callbacks(call):
             date_check = str((datetime.now() - timedelta(days=i)).date())
             day_tasks = user["history"].get(date_check, set())
 
-            # Считаем выполненные намазы
             prayers_count += len(day_tasks.intersection(prayer_tasks))
             if "quran" in day_tasks:
                 quran_days += 1
@@ -234,7 +214,7 @@ def handle_callbacks(call):
             f"📖 Коран: **{quran_days} дн.**\n"
             f"📚 Книга: **{book_days} дн.**\n"
             f"🏃 Спорт: **{sport_days} дн.**\n\n"
-            f"Каждый день — это новая возможность!"
+            f"Каждый день — это шаг вперёд!"
         )
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, history_text, parse_mode="Markdown")
