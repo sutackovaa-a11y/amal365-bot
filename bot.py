@@ -18,12 +18,19 @@ def run_flask():
 
 Thread(target=run_flask, daemon=True).start()
 
-# --- Безопасное получение токена из настроек Render ---
+# --- Безопасное получение токена из переменных окружения Render ---
 TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
-# База данных пользователей
 users = {}
+
+NEXT_PRAYER_GOALS = {
+    "fajr": "🌤 **Следующая цель:** Зухр",
+    "dhuhr": "☀️ **Следующая цель:** Аср",
+    "asr": "🌇 **Следующая цель:** Магриб",
+    "maghrib": "🌙 **Следующая цель:** Иша",
+    "isha": "✨ **Все обязательные намазы на сегодня отмечены!**"
+}
 
 MODES = {
     "min": {
@@ -114,7 +121,7 @@ def start_cmd(message):
         bot.send_message(
             message.chat.id,
             "🌙 **Ассаляму алейкум! Добро пожаловать в Амаль 365.**\n\n"
-            "Выберите удобный режим для старта:",
+            "Выберите режим для старта:",
             reply_markup=get_mode_keyboard(),
             parse_mode="Markdown"
         )
@@ -156,18 +163,26 @@ def handle_callbacks(call):
     elif call.data.startswith("task_"):
         task = call.data.replace("task_", "")
         today_completed = user["history"][today]
-        task_title = TASK_NAMES.get(task, task)
 
         if task in today_completed:
             today_completed.remove(task)
-            # Всплывающее уведомление без отправки отдельного сообщения
-            bot.answer_callback_query(call.id, f"Отметка снята: {task_title}")
+            bot.answer_callback_query(call.id, "Отметка снята")
         else:
             today_completed.add(task)
-            # Короткая плашка сверху экрана
-            bot.answer_callback_query(call.id, f"Принято! ✅ ({task_title})")
+            bot.answer_callback_query(call.id)
 
-        # Обновляем состояния кнопок прямо в сообщении
+            # Отправка текстового сообщения в чат
+            task_title = TASK_NAMES.get(task, task)
+            next_goal = NEXT_PRAYER_GOALS.get(task, "")
+
+            if next_goal:
+                msg_text = f"✅ **{task_title} отмечен!**\n\n{next_goal}"
+            else:
+                msg_text = f"✅ **{task_title} отмечено!**\n\n🌱 Хорошее дело добавлено в сегодняшний день."
+
+            bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
+
+        # Обновляем кнопки
         bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
@@ -214,7 +229,7 @@ def handle_callbacks(call):
             f"📖 Коран: **{quran_days} дн.**\n"
             f"📚 Книга: **{book_days} дн.**\n"
             f"🏃 Спорт: **{sport_days} дн.**\n\n"
-            f"Каждый день — это шаг вперёд!"
+            f"Каждый день — это новая возможность!"
         )
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, history_text, parse_mode="Markdown")
