@@ -60,7 +60,7 @@ NEXT_PRAYERS = {
     "isha": None
 }
 
-# --- Разнообразные вариации мотиваций (выбираются случайно) ---
+# Расширенный список похвал
 PRAISES = [
     "Я так рада за вас!",
     "Прекрасный шаг вперед!",
@@ -68,7 +68,20 @@ PRAISES = [
     "Ловите заслуженную галочку!",
     "Каждый шаг приближает вас к успеху!",
     "Супер! Двигаемся дальше в том же духе!",
-    "Пусть каждое дело приносит баракат!"
+    "Пусть каждое дело приносит баракат!",
+    "Ваше постоянство очень вдохновляет!",
+    "Ещё одна важная победа сегодня!",
+    "Маленькими шагами — к большой цели!",
+    "Прекрасный темп, так держать!",
+    "Каждое действие имеет огромное значение!"
+]
+
+# Разнообразные варианты средних фраз
+MIDDLE_PHRASES = [
+    "Осталось всего {rem}) Двигаемся по плану.",
+    "Ещё {rem} — и день будет закрыт!",
+    "Шаг за шагом к цели. Осталось: {rem}.",
+    "Совсем немного до полного выполнения дня — ещё {rem}!"
 ]
 
 FINISH_MESSAGES = [
@@ -83,9 +96,17 @@ def get_user(user_id):
         users[user_id] = {
             "mode": None,
             "streak": 1,
-            "history": {}
+            "history": {},
+            "last_praise": ""
         }
     return users[user_id]
+
+def get_unique_praise(user):
+    # Выбирает фразу, которая НЕ совпадала с предыдущей
+    available = [p for p in PRAISES if p != user.get("last_praise", "")]
+    praise = random.choice(available)
+    user["last_praise"] = praise
+    return praise
 
 def calculate_level(streak_days):
     if streak_days >= 365:
@@ -191,11 +212,12 @@ def handle_callbacks(call):
             today_completed.add(task)
             bot.answer_callback_query(call.id)
 
-            praise = random.choice(PRAISES)
+            praise = get_unique_praise(user)
             task_title = TASK_NAMES.get(task, task)
             active_tasks = MODES[user["mode"]]["tasks"]
             total_count = len(active_tasks)
             current_count = len(today_completed)
+            rem = total_count - current_count
             next_step = NEXT_PRAYERS.get(task)
 
             if current_count == total_count:
@@ -205,9 +227,11 @@ def handle_callbacks(call):
                     f"{finish}"
                 )
             elif next_step:
+                middle_tmpl = random.choice(MIDDLE_PHRASES)
+                middle_str = middle_tmpl.format(rem=rem)
                 msg_text = (
                     f"{praise} Ловите {current_count}-ю галочку ✅ (**{task_title}**).\n\n"
-                    f"Осталось всего {total_count - current_count}) Двигаемся по плану. "
+                    f"{middle_str} "
                     f"Следующий шаг: **{next_step}**."
                 )
             else:
@@ -241,9 +265,7 @@ def handle_callbacks(call):
     elif call.data == "show_history":
         prayer_tasks = {"fajr", "dhuhr", "asr", "maghrib", "isha"}
         
-        # Счётчики за 7 дней
         p_7, q_7, b_7, s_7 = 0, 0, 0, 0
-        # Счётчики за 30 дней
         p_30, q_30, b_30, s_30 = 0, 0, 0, 0
 
         for i in range(30):
@@ -252,13 +274,11 @@ def handle_callbacks(call):
 
             prayers_done = len(day_tasks.intersection(prayer_tasks))
 
-            # Считаем за последние 30 дней
             p_30 += prayers_done
             if "quran" in day_tasks: q_30 += 1
             if "book" in day_tasks: b_30 += 1
             if "sport" in day_tasks: s_30 += 1
 
-            # Считаем за первые 7 дней
             if i < 7:
                 p_7 += prayers_done
                 if "quran" in day_tasks: q_7 += 1
