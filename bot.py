@@ -128,7 +128,7 @@ def get_main_keyboard(user_id):
 
     markup.add(
         types.InlineKeyboardButton("📊 Мой прогресс", callback_data="show_progress"),
-        types.InlineKeyboardButton("📅 История за 7 дней", callback_data="show_history"),
+        types.InlineKeyboardButton("📅 История (7 и 30 дней)", callback_data="show_history"),
         types.InlineKeyboardButton("⚙️ Сменить режим", callback_data="change_mode")
     )
     return markup
@@ -191,7 +191,6 @@ def handle_callbacks(call):
             today_completed.add(task)
             bot.answer_callback_query(call.id)
 
-            # Выбираем случайную похвалу и финишную фразу
             praise = random.choice(PRAISES)
             task_title = TASK_NAMES.get(task, task)
             active_tasks = MODES[user["mode"]]["tasks"]
@@ -219,7 +218,6 @@ def handle_callbacks(call):
 
             bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
 
-        # Обновляем кнопки трекера
         bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
@@ -241,32 +239,45 @@ def handle_callbacks(call):
         bot.send_message(call.message.chat.id, progress_text, parse_mode="Markdown")
 
     elif call.data == "show_history":
-        prayers_count = 0
-        quran_days = 0
-        book_days = 0
-        sport_days = 0
-
         prayer_tasks = {"fajr", "dhuhr", "asr", "maghrib", "isha"}
+        
+        # Счётчики за 7 дней
+        p_7, q_7, b_7, s_7 = 0, 0, 0, 0
+        # Счётчики за 30 дней
+        p_30, q_30, b_30, s_30 = 0, 0, 0, 0
 
-        for i in range(7):
+        for i in range(30):
             date_check = str((datetime.now() - timedelta(days=i)).date())
             day_tasks = user["history"].get(date_check, set())
 
-            prayers_count += len(day_tasks.intersection(prayer_tasks))
-            if "quran" in day_tasks:
-                quran_days += 1
-            if "book" in day_tasks:
-                book_days += 1
-            if "sport" in day_tasks:
-                sport_days += 1
+            prayers_done = len(day_tasks.intersection(prayer_tasks))
+
+            # Считаем за последние 30 дней
+            p_30 += prayers_done
+            if "quran" in day_tasks: q_30 += 1
+            if "book" in day_tasks: b_30 += 1
+            if "sport" in day_tasks: s_30 += 1
+
+            # Считаем за первые 7 дней
+            if i < 7:
+                p_7 += prayers_done
+                if "quran" in day_tasks: q_7 += 1
+                if "book" in day_tasks: b_7 += 1
+                if "sport" in day_tasks: s_7 += 1
 
         history_text = (
-            f"📅 **За последние 7 дней:**\n\n"
-            f"🕌 Намазы: **{prayers_count}/35**\n"
-            f"📖 Коран: **{quran_days} дн.**\n"
-            f"📚 Книга: **{book_days} дн.**\n"
-            f"🏃 Спорт: **{sport_days} дн.**\n\n"
-            f"Каждый день — это шаг вперёд!"
+            f"📅 **История вашей активности:**\n\n"
+            f"🗓 **За 7 дней:**\n"
+            f"🕌 Намазы: **{p_7}/35**\n"
+            f"📖 Коран: **{q_7} дн.**\n"
+            f"📚 Книга: **{b_7} дн.**\n"
+            f"🏃 Спорт: **{s_7} дн.**\n\n"
+            f"📊 **За 30 дней (месяц):**\n"
+            f"🕌 Намазы: **{p_30}/150**\n"
+            f"📖 Коран: **{q_30} дн.**\n"
+            f"📚 Книга: **{b_30} дн.**\n"
+            f"🏃 Спорт: **{s_30} дн.**\n\n"
+            f"Каждый день — это шаг к постоянству! 🤍"
         )
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, history_text, parse_mode="Markdown")
