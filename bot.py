@@ -1,4 +1,5 @@
 import os
+import random
 from threading import Thread
 from flask import Flask
 import telebot
@@ -18,19 +19,12 @@ def run_flask():
 
 Thread(target=run_flask, daemon=True).start()
 
-# --- Безопасное получение токена из переменных окружения Render ---
+# --- Безопасное чтение токена из переменных окружения Render ---
 TOKEN = os.environ.get('BOT_TOKEN')
 bot = telebot.TeleBot(TOKEN)
 
+# База данных пользователей
 users = {}
-
-NEXT_PRAYER_GOALS = {
-    "fajr": "🌤 **Следующая цель:** Зухр",
-    "dhuhr": "☀️ **Следующая цель:** Аср",
-    "asr": "🌇 **Следующая цель:** Магриб",
-    "maghrib": "🌙 **Следующая цель:** Иша",
-    "isha": "✨ **Все обязательные намазы на сегодня отмечены!**"
-}
 
 MODES = {
     "min": {
@@ -57,6 +51,32 @@ TASK_NAMES = {
     "sport": "Спорт",
     "book": "Книга"
 }
+
+NEXT_PRAYERS = {
+    "fajr": "Зухр ☀️",
+    "dhuhr": "Аср 🌇",
+    "asr": "Магриб 🌙",
+    "maghrib": "Иша ✨",
+    "isha": None
+}
+
+# --- Разнообразные вариации мотиваций (выбираются случайно) ---
+PRAISES = [
+    "Я так рада за вас!",
+    "Прекрасный шаг вперед!",
+    "МашаАллах, отличная дисциплина!",
+    "Ловите заслуженную галочку!",
+    "Каждый шаг приближает вас к успеху!",
+    "Супер! Двигаемся дальше в том же духе!",
+    "Пусть каждое дело приносит баракат!"
+]
+
+FINISH_MESSAGES = [
+    "✨ **Альхамдулиллях! Все дела на сегодня выполнены!** Вы большие молодцы, отдыхайте с чистой совестью 🤍",
+    "🌟 **Невероятно! День закрыт на 100%!** Отличная работа и постоянство!",
+    "🌙 **Альхамдулиллях, идеальный день!** Все галочки собраны, так держать!",
+    "🤍 **Какая красота! План на сегодня полностью выполнен.** Двигаемся к цели дальше!"
+]
 
 def get_user(user_id):
     if user_id not in users:
@@ -121,7 +141,7 @@ def start_cmd(message):
         bot.send_message(
             message.chat.id,
             "🌙 **Ассаляму алейкум! Добро пожаловать в Амаль 365.**\n\n"
-            "Выберите режим для старта:",
+            "Выберите удобный режим для старта:",
             reply_markup=get_mode_keyboard(),
             parse_mode="Markdown"
         )
@@ -171,18 +191,35 @@ def handle_callbacks(call):
             today_completed.add(task)
             bot.answer_callback_query(call.id)
 
-            # Отправка текстового сообщения в чат
+            # Выбираем случайную похвалу и финишную фразу
+            praise = random.choice(PRAISES)
             task_title = TASK_NAMES.get(task, task)
-            next_goal = NEXT_PRAYER_GOALS.get(task, "")
+            active_tasks = MODES[user["mode"]]["tasks"]
+            total_count = len(active_tasks)
+            current_count = len(today_completed)
+            next_step = NEXT_PRAYERS.get(task)
 
-            if next_goal:
-                msg_text = f"✅ **{task_title} отмечен!**\n\n{next_goal}"
+            if current_count == total_count:
+                finish = random.choice(FINISH_MESSAGES)
+                msg_text = (
+                    f"✅ **{task_title}** — это ваша {current_count}-я галочка!\n\n"
+                    f"{finish}"
+                )
+            elif next_step:
+                msg_text = (
+                    f"{praise} Ловите {current_count}-ю галочку ✅ (**{task_title}**).\n\n"
+                    f"Осталось всего {total_count - current_count}) Двигаемся по плану. "
+                    f"Следующий шаг: **{next_step}**."
+                )
             else:
-                msg_text = f"✅ **{task_title} отмечено!**\n\n🌱 Хорошее дело добавлено в сегодняшний день."
+                msg_text = (
+                    f"{praise} Ловите {current_count}-ю галочку ✅ (**{task_title}**).\n\n"
+                    f"Уже **{current_count} из {total_count}** выполнено!"
+                )
 
             bot.send_message(call.message.chat.id, msg_text, parse_mode="Markdown")
 
-        # Обновляем кнопки
+        # Обновляем кнопки трекера
         bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
@@ -229,7 +266,7 @@ def handle_callbacks(call):
             f"📖 Коран: **{quran_days} дн.**\n"
             f"📚 Книга: **{book_days} дн.**\n"
             f"🏃 Спорт: **{sport_days} дн.**\n\n"
-            f"Каждый день — это новая возможность!"
+            f"Каждый день — это шаг вперёд!"
         )
         bot.answer_callback_query(call.id)
         bot.send_message(call.message.chat.id, history_text, parse_mode="Markdown")
