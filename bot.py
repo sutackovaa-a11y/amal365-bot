@@ -562,7 +562,7 @@ async def show_step_of_day(message: Message):
     profile = get_user_profile(message.from_user.id)
     active_steps = [s for s in ALL_STEPS if profile['mode'] in s['modes']]
     
-    # Всегда определяем шаг по текущему часу, чтобы не застревать на первом шаге
+    # Интеллектуальный выбор шага строго по текущему времени суток
     current_hour = datetime.datetime.now().hour
     best_idx = 0
     for i, step in enumerate(active_steps):
@@ -587,7 +587,6 @@ async def step_nav_cb(callback: CallbackQuery):
     active_steps = [s for s in ALL_STEPS if profile['mode'] in s['modes']]
 
     if 0 <= new_idx < len(active_steps):
-        update_user_profile(callback.from_user.id, step_index=new_idx)
         step = active_steps[new_idx]
         text = (
             f"📌 <b>Шаг {new_idx + 1} из {len(active_steps)}</b>\n\n"
@@ -607,7 +606,6 @@ async def complete_step_callback(callback: CallbackQuery):
     active_steps = [s for s in ALL_STEPS if profile['mode'] in s['modes']]
 
     next_idx = step_idx + 1
-    update_user_profile(callback.from_user.id, step_index=next_idx)
 
     if next_idx >= len(active_steps):
         new_streak = profile['streak'] + 1
