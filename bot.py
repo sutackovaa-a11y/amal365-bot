@@ -46,13 +46,19 @@ def init_db():
             total_steps INTEGER
         )
     """)
-    # Таблица для тасбиха: хранит счетчик для каждого зикра отдельно по пользователям
+    # Таблица для тасбиха: хранит текущий зикр, цель и счетчики
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tasbih_state (
+            user_id INTEGER PRIMARY KEY,
+            current_dhikr TEXT DEFAULT 'subhanallah',
+            target INTEGER DEFAULT 33
+        )
+    """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasbih_data (
             user_id INTEGER,
             dhikr_type TEXT,
             count INTEGER DEFAULT 0,
-            target INTEGER DEFAULT 33,
             PRIMARY KEY (user_id, dhikr_type)
         )
     """)
@@ -98,37 +104,53 @@ DHIKR_TITLES = {
     "la_ilaha_illallah": "Ля иляха илля Ллах (لَا إِلَٰهَ إِلَّا ٱللَّٰهُ)"
 }
 
-def get_all_tasbih_data(user_id: int):
+def get_user_tasbih_settings(user_id: int):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT dhikr_type, count, target FROM tasbih_data WHERE user_id = ?", (user_id,))
-    rows = cursor.fetchall()
-    
-    data = {}
-    for dhikr_key in DHIKR_TITLES.keys():
-        data[dhikr_key] = {"count": 0, "target": 33}
-        
-    for row in rows:
-        dhikr_type, count, target = row
-        if dhikr_type in data:
-            data[dhikr_type] = {"count": count, "target": target}
-            
+    cursor.execute("SELECT current_dhikr, target FROM tasbih_state WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("INSERT INTO tasbih_state (user_id, current_dhikr, target) VALUES (?, 'subhanallah', 33)", (user_id,))
+        conn.commit()
+        current_dhikr, target = 'subhanallah', 33
+    else:
+        current_dhikr, target = row
     conn.close()
-    return data
+    return current_dhikr, target
 
-def update_tasbih_count(user_id: int, dhikr_type: str, count: int, target: int = None):
+def update_user_tasbih_settings(user_id: int, current_dhikr: str = None, target: int = None):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    if target is None:
-        cursor.execute("SELECT target FROM tasbih_data WHERE user_id = ? AND dhikr_type = ?", (user_id, dhikr_type))
-        row = cursor.fetchone()
-        target = row[0] if row else 33
-
+    cursor.execute("SELECT current_dhikr, target FROM tasbih_state WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    
+    curr = current_dhikr if current_dhikr is not None else (row[0] if row else 'subhanallah')
+    tgt = target if target is not None else (row[1] if row else 33)
+    
     cursor.execute("""
-        INSERT INTO tasbih_data (user_id, dhikr_type, count, target)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(user_id, dhikr_type) DO UPDATE SET count = ?, target = ?
-    """, (user_id, dhikr_type, count, target, count, target))
+        INSERT INTO tasbih_state (user_id, current_dhikr, target)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET current_dhikr = ?, target = ?
+    """, (user_id, curr, tgt, curr, tgt))
+    conn.commit()
+    conn.close()
+
+def get_dhikr_count(user_id: int, dhikr_type: str):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT count FROM tasbih_data WHERE user_id = ? AND dhikr_type = ?", (user_id, dhikr_type))
+    row = cursor.fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+def update_dhikr_count(user_id: int, dhikr_type: str, count: int):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT INTO tasbih_data (user_id, dhikr_type, count)
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, dhikr_type) DO UPDATE SET count = ?
+    """, (user_id, dhikr_type, count, count))
     conn.commit()
     conn.close()
 
@@ -318,78 +340,156 @@ async def cmd_start(message: Message):
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
-# ----------------- 📿 ЭЛЕКТРОННЫЙ ТАСБИХ (ОБЩИЙ СПИСОК) -----------------
+# ----------------- 📿 ЭЛЕКТРОННЫЙ ТАСБИХ (КОМПАКТНЫЙ РЕЖИМ С ЦЕЛЯМИ) -----------------
 
-def get_tasbih_menu_keyboard(tasbih_data: dict):
-    ikb = []
-    for dhikr_key, title in DHIKR_TITLES.items():
-        info = tasbih_data.get(dhikr_key, {"count": 0, "target": 33})
-        cnt = info["count"]
-        tgt = info["target"]
-        tgt_str = str(tgt) if tgt > 0 else "∞"
-        
-        # Кнопка для каждого зикра: увеличивает счет на +1
-        ikb.append([
-            InlineKeyboardButton(
-                text=f"{title.split('(')[0].strip()}: {cnt} / {tgt_str}", 
-                callback_data=f"tasbih_inc_{dhikr_key}"
-            )
-        ])
-    
-    # Общие кнопки управления
-    ikb.append([
-        InlineKeyboardButton(text="🔄 Сбросить все", callback_data="tasbih_reset_all")
+def get_tasbih_inline_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📿 НАЖАТЬ ДЛЯ СЧЕТА ➕", callback_data="tasbih_click")],
+        [InlineKeyboardButton(text="🔄 Сброс", callback_data="tasbih_reset"), InlineKeyboardButton(text="🎯 Цель", callback_data="tasbih_change_target")],
+        [InlineKeyboardButton(text="📖 Выбрать другое поминание", callback_data="tasbih_select_list")]
     ])
-    return InlineKeyboardMarkup(inline_keyboard=ikb)
 
 @dp.message(F.text == "📿 Тасбих (Четки)")
 async def show_tasbih(message: Message):
-    data = get_all_tasbih_data(message.from_user.id)
+    current_dhikr, target = get_user_tasbih_settings(message.from_user.id)
+    count = get_dhikr_count(message.from_user.id, current_dhikr)
+    title = DHIKR_TITLES.get(current_dhikr, current_dhikr)
+    
+    target_str = str(target) if target > 0 else "∞"
+
     text = (
         "📿 <b>Электронный Тасбих</b>\n\n"
-        "Выберите поминание ниже, чтобы сделать нажатие (+1), или посмотрите общий прогресс за сегодня:"
+        f"<b>Текущее поминание:</b>\n✨ {title}\n\n"
+        f"📊 Счёт: <b>{count} / {target_str}</b>\n\n"
+        "Нажимайте на кнопку ниже, чтобы вести счет:"
     )
-    await message.answer(text, parse_mode="HTML", reply_markup=get_tasbih_menu_keyboard(data))
+    await message.answer(text, parse_mode="HTML", reply_markup=get_tasbih_inline_keyboard())
 
-@dp.callback_query(F.data.startswith("tasbih_inc_"))
-async def tasbih_inc_cb(callback: CallbackQuery):
-    dhikr_key = callback.data.replace("tasbih_inc_", "")
-    data = get_all_tasbih_data(callback.from_user.id)
+@dp.callback_query(F.data == "tasbih_click")
+async def tasbih_click_cb(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    current_dhikr, target = get_user_tasbih_settings(user_id)
+    count = get_dhikr_count(user_id, current_dhikr) + 1
     
-    current_info = data.get(dhikr_key, {"count": 0, "target": 33})
-    new_count = current_info["count"] + 1
-    target = current_info["target"]
+    update_dhikr_count(user_id, current_dhikr, count)
     
-    update_tasbih_count(callback.from_user.id, dhikr_key, new_count, target)
-    
-    # Обновляем локальный словарь для перерисовки клавиатуры
-    data[dhikr_key]["count"] = new_count
-    
-    if target > 0 and new_count == target:
-        await callback.answer(f"🎉 МашаАллах! Цель выполнена!", show_alert=True)
+    title = DHIKR_TITLES.get(current_dhikr, current_dhikr)
+    target_str = str(target) if target > 0 else "∞"
+
+    if target > 0 and count == target:
+        await callback.answer(f"🎉 МашаАллах! Цель ({target}) выполнена!", show_alert=True)
     else:
-        await callback.answer(f"➕ {new_count}")
+        await callback.answer(f"+1 ({count})")
 
+    text = (
+        "📿 <b>Электронный Тасбих</b>\n\n"
+        f"<b>Текущее поминание:</b>\n✨ {title}\n\n"
+        f"📊 Счёт: <b>{count} / {target_str}</b>\n\n"
+        "Нажимайте на кнопку ниже, чтобы вести счет:"
+    )
     try:
-        await callback.message.edit_reply_markup(reply_markup=get_tasbih_menu_keyboard(data))
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_tasbih_inline_keyboard())
     except Exception:
         pass
 
-@dp.callback_query(F.data == "tasbih_reset_all")
-async def tasbih_reset_all_cb(callback: CallbackQuery):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM tasbih_data WHERE user_id = ?", (callback.from_user.id,))
-    conn.commit()
-    conn.close()
+@dp.callback_query(F.data == "tasbih_reset")
+async def tasbih_reset_cb(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    current_dhikr, target = get_user_tasbih_settings(user_id)
+    update_dhikr_count(user_id, current_dhikr, 0)
     
-    data = get_all_tasbih_data(callback.from_user.id)
-    await callback.answer("Все счетчики тасбиха сброшены!")
-    
+    title = DHIKR_TITLES.get(current_dhikr, current_dhikr)
+    target_str = str(target) if target > 0 else "∞"
+
+    text = (
+        "📿 <b>Электронный Тасбих</b>\n\n"
+        f"<b>Текущее поминание:</b>\n✨ {title}\n\n"
+        f"📊 Счёт: <b>0 / {target_str}</b>\n\n"
+        "Нажимайте на кнопку ниже, чтобы вести счет:"
+    )
+    await callback.answer("Счетчик сброшен!")
     try:
-        await callback.message.edit_reply_markup(reply_markup=get_tasbih_menu_keyboard(data))
+        await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_tasbih_inline_keyboard())
     except Exception:
         pass
+
+@dp.callback_query(F.data == "tasbih_change_target")
+async def tasbih_change_target_cb(callback: CallbackQuery):
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="33", callback_data="set_target_33"), InlineKeyboardButton(text="99", callback_data="set_target_99"), InlineKeyboardButton(text="100", callback_data="set_target_100")],
+        [InlineKeyboardButton(text="∞ (Бесконечно)", callback_data="set_target_0")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_tasbih")]
+    ])
+    await callback.message.edit_text("🎯 <b>Выберите цель поминания:</b>", parse_mode="HTML", reply_markup=ikb)
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("set_target_"))
+async def set_target_value_cb(callback: CallbackQuery):
+    target = int(callback.data.replace("set_target_", ""))
+    update_user_tasbih_settings(callback.from_user.id, target=target)
+    await callback.answer(f"Цель установлена: {target if target > 0 else '∞'}")
+    
+    # Возвращаемся в главное меню тасбиха
+    user_id = callback.from_user.id
+    current_dhikr, _ = get_user_tasbih_settings(user_id)
+    count = get_dhikr_count(user_id, current_dhikr)
+    title = DHIKR_TITLES.get(current_dhikr, current_dhikr)
+    target_str = str(target) if target > 0 else "∞"
+
+    text = (
+        "📿 <b>Электронный Тасбих</b>\n\n"
+        f"<b>Текущее поминание:</b>\n✨ {title}\n\n"
+        f"📊 Счёт: <b>{count} / {target_str}</b>\n\n"
+        "Нажимайте на кнопку ниже, чтобы вести счет:"
+    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_tasbih_inline_keyboard())
+
+@dp.callback_query(F.data == "tasbih_select_list")
+async def tasbih_select_list_cb(callback: CallbackQuery):
+    ikb = []
+    for key, title in DHIKR_TITLES.items():
+        ikb.append([InlineKeyboardButton(text=title, callback_data=f"select_dhikr_{key}")])
+    ikb.append([InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_tasbih")])
+    
+    await callback.message.edit_text("📖 <b>Выберите поминание из списка:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=ikb))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("select_dhikr_"))
+async def select_dhikr_cb(callback: CallbackQuery):
+    dhikr_key = callback.data.replace("select_dhikr_", "")
+    update_user_tasbih_settings(callback.from_user.id, current_dhikr=dhikr_key)
+    
+    user_id = callback.from_user.id
+    _, target = get_user_tasbih_settings(user_id)
+    count = get_dhikr_count(user_id, dhikr_key)
+    title = DHIKR_TITLES.get(dhikr_key, dhikr_key)
+    target_str = str(target) if target > 0 else "∞"
+
+    text = (
+        "📿 <b>Электронный Тасбих</b>\n\n"
+        f"<b>Текущее поминание:</b>\n✨ {title}\n\n"
+        f"📊 Счёт: <b>{count} / {target_str}</b>\n\n"
+        "Нажимайте на кнопку ниже, чтобы вести счет:"
+    )
+    await callback.answer("Поминание выбрано!")
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_tasbih_inline_keyboard())
+
+@dp.callback_query(F.data == "back_to_tasbih")
+async def back_to_tasbih_cb(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    current_dhikr, target = get_user_tasbih_settings(user_id)
+    count = get_dhikr_count(user_id, current_dhikr)
+    title = DHIKR_TITLES.get(current_dhikr, current_dhikr)
+    target_str = str(target) if target > 0 else "∞"
+
+    text = (
+        "📿 <b>Электронный Тасбих</b>\n\n"
+        f"<b>Текущее поминание:</b>\n✨ {title}\n\n"
+        f"📊 Счёт: <b>{count} / {target_str}</b>\n\n"
+        "Нажимайте на кнопку ниже, чтобы вести счет:"
+    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_tasbih_inline_keyboard())
+    await callback.answer()
 
 # ----------------- ШАГ ДНЯ -----------------
 
