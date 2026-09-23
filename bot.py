@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import random
 import sqlite3
 from datetime import datetime
@@ -14,8 +15,8 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
 )
+from aiohttp import web
 
-# Токен вашего бота
 TOKEN = "8944360971:AAHDP5g0ECefyVgiAW4OikkxUpKlYdOqfPw"
 
 logging.basicConfig(level=logging.INFO)
@@ -28,6 +29,27 @@ class SettingsStates(StatesGroup):
   waiting_for_city = State()
 
 
+# ==========================================
+# 🌐 ВЕБ-СЕРВЕР ДЛЯ ПОРТА RENDER (ИСПРАВЛЯЕТ OШИБКУ PORT SCAN)
+# ==========================================
+async def handle_ping(request):
+  return web.Response(text="Amal 365 Bot is active!")
+
+
+async def start_web_server():
+  app = web.Application()
+  app.router.add_get("/", handle_ping)
+  runner = web.AppRunner(app)
+  await runner.setup()
+  port = int(os.environ.get("PORT", 10000))
+  site = web.TCPSite(runner, "0.0.0.0", port)
+  await site.start()
+  logging.info(f"Web server successfully started on port {port}")
+
+
+# ==========================================
+# 🗄 ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
+# ==========================================
 def init_db():
   conn = sqlite3.connect("amal365.db")
   cursor = conn.cursor()
@@ -63,6 +85,9 @@ def init_db():
 
 init_db()
 
+# ==========================================
+# 📜 БАЗА ХАДИСОВ
+# ==========================================
 HADITHS = [
     {
         "id": 1,
@@ -140,7 +165,7 @@ def get_unique_hadith(user_id: int) -> str:
 
 
 # ==========================================
-# 🕌 ФУНКЦИЯ ПОЛУЧЕНИЯ ВРЕМЕНИ НАМАЗА
+# 🕌 ВРЕМЯ НАМАЗА ПО API
 # ==========================================
 async def get_prayer_times(city: str):
   url = f"http://api.aladhan.com/v1/timingsByCity?city={city}&country=&method=3"
@@ -624,6 +649,9 @@ async def set_bot_commands():
 
 async def main():
   await set_bot_commands()
+  # Запуск фонового веб-сервера для удовлетворения проверки портов Render
+  asyncio.create_task(start_web_server())
+  # Запуск бота
   await dp.start_polling(bot)
 
 
