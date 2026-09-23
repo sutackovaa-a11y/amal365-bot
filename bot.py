@@ -1,659 +1,543 @@
-import asyncio
-import logging
 import os
-import random
+import asyncio
+import datetime
+import logging
 import sqlite3
-from datetime import datetime
 import aiohttp
-from aiogram import Bot, Dispatcher, F, types
-from aiogram.filters import Command
+from aiohttp import web
+
+from aiogram import Bot, Dispatcher, F
+from aiogram.filters import CommandStart
+from aiogram.types import (
+    Message, CallbackQuery, 
+    ReplyKeyboardMarkup, KeyboardButton, 
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    BotCommand,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
-from aiohttp import web
 
-TOKEN = "8944360971:AAHDP5g0ECefyVgiAW4OikkxUpKlYdOqfPw"
-
+# Настройка логирования
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=TOKEN)
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
 
+# Токен бота
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8944360971:AAHDP5g0ECefyVgiAW4OikkxUpKlYdOqfPw")
 
-class SettingsStates(StatesGroup):
-  waiting_for_city = State()
+# База данных SQLite
+DB_FILE = "bot_database.db"
 
+# ----------------- РАБОТА С БАЗОЙ ДАННЫХ -----------------
 
-# ==========================================
-# 🌐 ВЕБ-СЕРВЕР ДЛЯ ПОРТА RENDER (ИСПРАВЛЯЕТ OШИБКУ PORT SCAN)
-# ==========================================
-async def handle_ping(request):
-  return web.Response(text="Amal 365 Bot is active!")
-
-
-async def start_web_server():
-  app = web.Application()
-  app.router.add_get("/", handle_ping)
-  runner = web.AppRunner(app)
-  await runner.setup()
-  port = int(os.environ.get("PORT", 10000))
-  site = web.TCPSite(runner, "0.0.0.0", port)
-  await site.start()
-  logging.info(f"Web server successfully started on port {port}")
-
-
-# ==========================================
-# 🗄 ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
-# ==========================================
 def init_db():
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute("""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    # Таблица пользователей
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
+            city TEXT DEFAULT 'Нерюнгри',
+            mode TEXT DEFAULT 'full',
             streak INTEGER DEFAULT 0,
-            tahajjud_enabled INTEGER DEFAULT 0,
-            city TEXT DEFAULT 'Бишкек',
-            current_step TEXT DEFAULT 'fajr',
-            last_date TEXT
+            last_completed_date TEXT,
+            step_index INTEGER DEFAULT 0
         )
     """)
-  cursor.execute("""
-        CREATE TABLE IF NOT EXISTS progress (
-            user_id INTEGER,
-            date TEXT,
-            step TEXT,
-            completed INTEGER DEFAULT 0,
-            PRIMARY KEY (user_id, date, step)
-        )
-    """)
-  cursor.execute("""
+    # Таблица просмотренных хадисов
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS seen_hadiths (
             user_id INTEGER,
-            hadith_id INTEGER,
+            hadith_id TEXT,
             PRIMARY KEY (user_id, hadith_id)
         )
     """)
-  conn.commit()
-  conn.close()
-
-
-init_db()
-
-# ==========================================
-# 📜 БАЗА ХАДИСОВ
-# ==========================================
-HADITHS = [
-    {
-        "id": 1,
-        "text": (
-            "«Молитва — это свет» (Муслим). Пусть она озаряет ваш день!"
-        ),
-    },
-    {
-        "id": 2,
-        "text": (
-            "«Ближе всего раб к своему Господу находится тогда, когда совершает"
-            " земной поклон (суджуд)» (Муслим)."
-        ),
-    },
-    {
-        "id": 3,
-        "text": (
-            "«Самые любимые дела для Аллаха — те, которые совершаются постоянно,"
-            " даже если они небольшие» (аль-Бухари, Муслим)."
-        ),
-    },
-    {
-        "id": 4,
-        "text": (
-            "«Отрадой моих глаз была сделана молитва» (ан-Насаи)."
-        ),
-    },
-    {
-        "id": 5,
-        "text": (
-            "«Самое любимое деяние перед Аллахом — это молитва, совершённая в"
-            " своё время» (аль-Бухари)."
-        ),
-    },
-    {
-        "id": 6,
-        "text": (
-            "«Пять ежедневных молитв подобны глубокой реке, протекающей у двери"
-            " каждого из вас, в которой он омывается каждый день по пять раз»"
-            " (Муслим)."
-        ),
-    },
-    {
-        "id": 7,
-        "text": (
-            "«Постоянство в добрых делах — это ключ к истикаме (устойчивости в"
-            " вере)»."
-        ),
-    },
-]
-
-
-def get_unique_hadith(user_id: int) -> str:
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "SELECT hadith_id FROM seen_hadiths WHERE user_id = ?", (user_id,)
-  )
-  seen = {row[0] for row in cursor.fetchall()}
-  available = [h for h in HADITHS if h["id"] not in seen]
-
-  if not available:
-    cursor.execute("DELETE FROM seen_hadiths WHERE user_id = ?", (user_id,))
+    # Таблица истории прогресса для 7/90/365 дней
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS progress_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            date TEXT UNIQUE,
+            completed_steps INTEGER,
+            total_steps INTEGER
+        )
+    """)
     conn.commit()
-    available = HADITHS
+    conn.close()
 
-  chosen = random.choice(available)
-  cursor.execute(
-      "INSERT OR IGNORE INTO seen_hadiths (user_id, hadith_id) VALUES (?, ?)",
-      (user_id, chosen["id"]),
-  )
-  conn.commit()
-  conn.close()
-  return chosen["text"]
+def get_user_profile(user_id: int):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, city, mode, streak, last_completed_date, step_index FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("INSERT INTO users (user_id, city, mode, streak, last_completed_date, step_index) VALUES (?, 'Нерюнгри', 'full', 0, NULL, 0)", (user_id,))
+        conn.commit()
+        row = (user_id, 'Нерюнгри', 'full', 0, None, 0)
+    conn.close()
+    return {
+        "user_id": row[0],
+        "city": row[1],
+        "mode": row[2],  # 'basic', 'tahajjud', 'full'
+        "streak": row[3],
+        "last_completed_date": row[4],
+        "step_index": row[5]
+    }
 
-
-# ==========================================
-# 🕌 ВРЕМЯ НАМАЗА ПО API
-# ==========================================
-async def get_prayer_times(city: str):
-  url = f"http://api.aladhan.com/v1/timingsByCity?city={city}&country=&method=3"
-  async with aiohttp.ClientSession() as session:
-    try:
-      async with session.get(url) as response:
-        if response.status == 200:
-          data = await response.json()
-          return data["data"]["timings"]
-    except Exception as e:
-      logging.error(f"Error fetching prayer times: {e}")
-  return None
-
-
-# ==========================================
-# 🚀 КОМАНДА /START И ГЛАВНОЕ МЕНЮ
-# ==========================================
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
-  await state.clear()
-  user_id = message.from_user.id
-  today = datetime.now().strftime("%Y-%m-%d")
-
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "SELECT streak, tahajjud_enabled, city, current_step, last_date FROM users"
-      " WHERE user_id = ?",
-      (user_id,),
-  )
-  user = cursor.fetchone()
-
-  if not user:
-    cursor.execute(
-        "INSERT INTO users (user_id, streak, tahajjud_enabled, city,"
-        " current_step, last_date) VALUES (?, 0, 0, 'Бишкек', 'fajr', ?)",
-        (user_id, today),
-    )
+def update_user_profile(user_id: int, **kwargs):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+    values = list(kwargs.values()) + [user_id]
+    cursor.execute(f"UPDATE users SET {fields} WHERE user_id = ?", values)
     conn.commit()
-  else:
-    tahajjud_en = user[1]
-    last_date = user[4]
-    if last_date != today:
-      first_step = "tahajjud" if tahajjud_en else "fajr"
-      cursor.execute(
-          "UPDATE users SET current_step = ?, last_date = ? WHERE user_id = ?",
-          (first_step, today, user_id),
-      )
-      conn.commit()
+    conn.close()
 
-  conn.close()
+def save_daily_history(user_id: int, completed: int, total: int):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    today_str = str(datetime.date.today())
+    cursor.execute("""
+        INSERT INTO progress_history (user_id, date, completed_steps, total_steps)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(date) DO UPDATE SET completed_steps = ?, total_steps = ?
+    """, (user_id, today_str, completed, total, completed, total))
+    conn.commit()
+    conn.close()
 
-  keyboard = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [InlineKeyboardButton(text="✨ Начать / Шаг дня", callback_data="next_step")],
-          [
-              InlineKeyboardButton(
-                  text="⏰ Время намаза", callback_data="prayer_times"
-              )
-          ],
-          [InlineKeyboardButton(text="📊 Мой прогресс", callback_data="progress")],
-          [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
-      ]
-  )
+def get_user_stats(user_id: int):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM progress_history WHERE user_id = ?", (user_id,))
+    total_days = cursor.fetchone()[0]
+    conn.close()
+    return total_days
 
-  await message.answer(
-      "🌙 **Амаль 365** — ваш личный духовный трекер.\n\nШаг за шагом к"
-      " довольству Всевышнего. Давайте проведем этот день с баракатом!",
-      reply_markup=keyboard,
-      parse_mode="Markdown",
-  )
+# ----------------- ШАГИ ДНЯ, ХАДИСЫ И РОСТ -----------------
 
-
-# ==========================================
-# ⏰ ВЫВОД ВРЕМЕНИ НАМАЗА
-# ==========================================
-@dp.callback_query(F.data == "prayer_times")
-async def show_prayer_times(callback: types.CallbackQuery):
-  user_id = callback.from_user.id
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute("SELECT city FROM users WHERE user_id = ?", (user_id,))
-  res = cursor.fetchone()
-  conn.close()
-
-  city = res[0] if res else "Бишкек"
-  timings = await get_prayer_times(city)
-
-  if timings:
-    text = (
-        f"🕌 **Расписание намаза на сегодня ({city}):**\n\n"
-        f"🌅 Фаджр (Рассвет): `{timings['Fajr']}`\n"
-        f"☀️ Восход (Шурук): `{timings['Sunrise']}`\n"
-        f"☀️ Зухр (Полудень): `{timings['Dhuhr']}`\n"
-        f"🌆 Аср (Предвечерняя): `{timings['Asr']}`\n"
-        f"🌇 Магриб (Закат): `{timings['Maghrib']}`\n"
-        f"🌃 Иша (Ночная): `{timings['Isha']}`\n"
-    )
-  else:
-    text = (
-        f"⚠️ Не удалось загрузить время для города **{city}**. Убедитесь, что"
-        " название написано правильно в настройках."
-    )
-
-  keyboard = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(
-                  text="⚙️ Изменить город", callback_data="change_city"
-              )
-          ],
-          [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
-      ]
-  )
-
-  await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
-  await callback.answer()
-
-
-# ==========================================
-# ⚙️ НАСТРОЙКИ (ГОРОД И ТАХАДЖУД)
-# ==========================================
-@dp.callback_query(F.data == "settings")
-async def show_settings(callback: types.CallbackQuery):
-  user_id = callback.from_user.id
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "SELECT tahajjud_enabled, city FROM users WHERE user_id = ?", (user_id,)
-  )
-  res = cursor.fetchone()
-  conn.close()
-
-  tahajjud_en = res[0] if res else 0
-  city = res[1] if res else "Бишкек"
-
-  tahajjud_btn_text = (
-      "🌙 Тахаджуд: Включен ✅" if tahajjud_en else "🌙 Тахаджуд: Выключен ❌"
-  )
-
-  keyboard = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(
-                  text=tahajjud_btn_text, callback_data="toggle_tahajjud"
-              )
-          ],
-          [
-              InlineKeyboardButton(
-                  text=f"🌍 Изменить город (сейчас: {city})",
-                  callback_data="change_city",
-              )
-          ],
-          [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")],
-      ]
-  )
-
-  await callback.message.edit_text(
-      "⚙️ **Настройки бота**\n\nЗдесь вы можете изменить режим (включить"
-      " Тахаджуд) и указать ваш город:",
-      reply_markup=keyboard,
-      parse_mode="Markdown",
-  )
-  await callback.answer()
-
-
-@dp.callback_query(F.data == "toggle_tahajjud")
-async def toggle_tahajjud(callback: types.CallbackQuery):
-  user_id = callback.from_user.id
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "SELECT tahajjud_enabled FROM users WHERE user_id = ?", (user_id,)
-  )
-  res = cursor.fetchone()
-  new_val = 0 if (res and res[0]) else 1
-
-  cursor.execute(
-      "UPDATE users SET tahajjud_enabled = ? WHERE user_id = ?",
-      (new_val, user_id),
-  )
-  conn.commit()
-  conn.close()
-
-  await show_settings(callback)
-
-
-@dp.callback_query(F.data == "change_city")
-async def ask_city(callback: types.CallbackQuery, state: FSMContext):
-  await callback.message.answer(
-      "✍️ Напишите название вашего города в ответе на это сообщение (например:"
-      " **Нерюнгри** или **Бишкек**):"
-  )
-  await state.set_state(SettingsStates.waiting_for_city)
-  await callback.answer()
-
-
-@dp.message(SettingsStates.waiting_for_city)
-async def save_city(message: types.Message, state: FSMContext):
-  user_id = message.from_user.id
-  new_city = message.text.strip()
-
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "UPDATE users SET city = ? WHERE user_id = ?", (new_city, user_id)
-  )
-  conn.commit()
-  conn.close()
-
-  await state.clear()
-  await message.answer(
-      f"✅ Город успешно изменен на **{new_city}**!", parse_mode="Markdown"
-  )
-
-  keyboard = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(
-                  text="⏰ Посмотреть время намаза", callback_data="prayer_times"
-              )
-          ],
-          [InlineKeyboardButton(text="⚙️ Вернуться в настройки", callback_data="settings")],
-          [InlineKeyboardButton(text="✨ Начать / Шаг дня", callback_data="next_step")],
-      ]
-  )
-  await message.answer("Выберите дальнейшее действие:", reply_markup=keyboard)
-
-
-@dp.callback_query(F.data == "main_menu")
-async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
-  await callback.message.delete()
-  await cmd_start(callback.message, state)
-
-
-# ==========================================
-# 🔄 ПОШАГОВАЯ ЛОГИКА НАМАЗОВ И АЗКАРОВ
-# ==========================================
-STEPS_ORDER_WITH_TAHAJJUD = [
-    "tahajjud",
-    "fajr",
-    "morning_azkar",
-    "dhuhr",
-    "asr",
-    "evening_azkar",
-    "maghrib",
-    "isha",
-]
-STEPS_ORDER_WITHOUT_TAHAJJUD = [
-    "fajr",
-    "morning_azkar",
-    "dhuhr",
-    "asr",
-    "evening_azkar",
-    "maghrib",
-    "isha",
+ALL_STEPS = [
+    {
+        "id": "tahajjud",
+        "title": "🌌 1. Ночной намаз (Тахаджуд)",
+        "hadith": "📖 *Хадис:* «Лучший намаз после обязательных — это ночной намаз (Тахаджуд)». (Муслим)\n\n✨ *Духовность:* Время искреннего дуа, когда Аллах близок к молящимся.",
+        "modes": ["tahajjud", "full"]
+    },
+    {
+        "id": "fajr",
+        "title": "🌅 2. Утренний намаз (Фаджр)",
+        "hadith": "📖 *Хадис:* «Тот, кто совершил утренний намаз, находится под защитой Аллаха». (Муслим)\n\n✨ *Напоминание:* 2 ракаата сунны Фаджра лучше, чем весь этот мир.",
+        "modes": ["basic", "tahajjud", "full"]
+    },
+    {
+        "id": "morning_azkar",
+        "title": "☀️ 3. Утренние азкары",
+        "hadith": "📖 *Коран:* «Поминайте Меня, и Я буду помнить о вас...» (Сура Аль-Бакара, 152)\n\n✨ *Защита:* Утренний щит от тревог и негатива на весь день.",
+        "modes": ["basic", "tahajjud", "full"]
+    },
+    {
+        "id": "quran",
+        "title": "📖 4. Чтение Священного Корана",
+        "hadith": "📖 *Хадис:* «Читайте Коран, ибо в День воскрешения он придет заступником за тех, кто его читал». (Муслим)\n\n✨ *Мудрость:* Прочитайте хотя бы 1 страницу с размышлением (Тадаббур).",
+        "modes": ["full"]
+    },
+    {
+        "id": "sport",
+        "title": "🏃‍♂️ 5. Спорт, здоровье и активность",
+        "hadith": "📖 *Хадис:* «Сильный верующий лучше и любимее Аллаху, чем слабый верующий, хотя в обоих есть благо». (Муслим)\n\n✨ *Тело и дух:* Разминка, 10 000 шагов или тренировка.",
+        "modes": ["full"]
+    },
+    {
+        "id": "dhuhr",
+        "title": "🏙 6. Полуденный намаз (Зухр)",
+        "hadith": "📖 *Хадис:* «Первое, за что будет спрошен раб в День суда — это его намаз». (Тирмизи)\n\n✨ *Напоминание:* Перерыв посреди дня для перезагрузки души.",
+        "modes": ["basic", "tahajjud", "full"]
+    },
+    {
+        "id": "books",
+        "title": "📚 7. Книги и саморазвитие",
+        "hadith": "📖 *Хадис:* «Стремление к знаниям — обязанность каждого мусульманина». (Ибн Маджа)\n\n✨ *Интеллект:* 15 минут чтения полезной книги для мышления.",
+        "modes": ["full"]
+    },
+    {
+        "id": "asr",
+        "title": "🌇 8. Послеполуденный намаз (Аср)",
+        "hadith": "📖 *Хадис:* «Кто упустит намаз Аср, тот словно лишился семьи и своего имущества». (Аль-Бухари)\n\n✨ *Напоминание:* Сохраняйте фокус во второй половине дня.",
+        "modes": ["basic", "tahajjud", "full"]
+    },
+    {
+        "id": "maghrib",
+        "title": "🌆 9. Вечерний намаз (Магриб)",
+        "hadith": "📖 *Хадис:* «Молитва — это опора религии». (Тирмизи)\n\n✨ *Благодарность:* Встречайте вечер с благодарностью Всевышнему.",
+        "modes": ["basic", "tahajjud", "full"]
+    },
+    {
+        "id": "isha",
+        "title": "🌌 10. Ночной намаз (Иша)",
+        "hadith": "📖 *Хадис:* «Кто совершит Иша в джамаате, словно молился половину ночи». (Муслим)\n\n✨ *Завершение:* Достойный финал обязательных поклонений дня.",
+        "modes": ["basic", "tahajjud", "full"]
+    },
+    {
+        "id": "evening_azkar",
+        "title": "🌙 11. Вечерние азкары",
+        "hadith": "📖 *Напоминание:* Чтение Аят аль-Курси и сур Защиты перед сном дарует покой.",
+        "modes": ["basic", "tahajjud", "full"]
+    },
+    {
+        "id": "reflection",
+        "title": "🤍 12. Самоанализ, Истигфар и Дуа перед сном",
+        "hadith": "📖 *Дуа:* «О Аллах, прости мои грехи и направи сунну Творения в мое сердце».\n\n✨ *Итог дня:* Простите всех, кто обидел вас, и спите с чистой душой.",
+        "modes": ["basic", "tahajjud", "full"]
+    }
 ]
 
-STEP_NAMES = {
-    "tahajjud": "🌙 Тахаджуд",
-    "fajr": "🌅 Фаджр",
-    "morning_azkar": "☀️ Утренние азкары",
-    "dhuhr": "☀️ Зухр",
-    "asr": " عصر Аср",
-    "evening_azkar": "🌆 Вечерние азкары",
-    "maghrib": "🌇 Магриб",
-    "isha": "🌃 Иша",
+# ----------------- ГЛОБАЛЬНЫЙ РАСЧЕТ НАМАЗА (ЛЮБОЙ ГОРОД МИРА) -----------------
+
+KNOWN_CITIES = {
+    "нерюнгри": (56.6667, 124.7167),
+    "neryungri": (56.6667, 124.7167),
+    "бишкек": (42.8746, 74.5698),
+    "якутск": (62.0355, 129.6755),
+    "москва": (55.7558, 37.6173),
+    "казань": (55.7887, 49.1221),
+    "дубай": (25.2048, 55.2708),
+    "стамбул": (41.0082, 28.9784)
 }
 
+async def get_prayer_data(city_name: str):
+    city_clean = city_name.strip().lower()
+    lat, lng = None, None
 
-@dp.callback_query(F.data == "next_step")
-async def process_next_step(callback: types.CallbackQuery):
-  user_id = callback.from_user.id
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
+    if city_clean in KNOWN_CITIES:
+        lat, lng = KNOWN_CITIES[city_clean]
 
-  cursor.execute(
-      "SELECT tahajjud_enabled, current_step FROM users WHERE user_id = ?",
-      (user_id,),
-  )
-  res = cursor.fetchone()
-  tahajjud_en, current_step = (
-      res[0] if res else 0,
-      res[1] if res else "fajr",
-  )
+    async with aiohttp.ClientSession() as session:
+        if not lat or not lng:
+            try:
+                geo_url = f"https://nominatim.openstreetmap.org/search?q={city_name}&format=json&limit=1"
+                headers = {"User-Agent": "Amal365GlobalBot/2.0"}
+                async with session.get(geo_url, headers=headers) as geo_res:
+                    if geo_res.status == 200:
+                        geo_json = await geo_res.json()
+                        if geo_json:
+                            lat = float(geo_json[0]["lat"])
+                            lng = float(geo_json[0]["lon"])
+            except Exception:
+                pass
 
-  order = (
-      STEPS_ORDER_WITH_TAHAJJUD if tahajjud_en else STEPS_ORDER_WITHOUT_TAHAJJUD
-  )
+        if lat and lng:
+            url = f"http://api.aladhan.com/v1/timings?latitude={lat}&longitude={lng}&method=3"
+        else:
+            url = f"http://api.aladhan.com/v1/timingsByCity?city={city_name}&country=&method=3"
 
-  if current_step not in order or current_step == "completed":
-    reset_kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🔄 Начать день заново", callback_data="reset_today"
-                )
-            ]
-        ]
+        async with session.get(url) as response:
+            if response.status == 200:
+                json_res = await response.json()
+                if json_res.get("code") == 200:
+                    timings = json_res['data']['timings']
+
+                    fmt = "%H:%M"
+                    try:
+                        isha_dt = datetime.datetime.strptime(timings['Isha'], fmt)
+                        fajr_dt = datetime.datetime.strptime(timings['Fajr'], fmt)
+                        if fajr_dt <= isha_dt:
+                            fajr_dt += datetime.timedelta(days=1)
+                        night_dur = fajr_dt - isha_dt
+                        tahajjud_dt = isha_dt + (night_dur * (2/3))
+                        tahajjud_str = tahajjud_dt.strftime("%H:%M")
+                    except Exception:
+                        tahajjud_str = "02:30"
+
+                    return {
+                        "Fajr": timings.get("Fajr"),
+                        "Sunrise": timings.get("Sunrise"),
+                        "Dhuhr": timings.get("Dhuhr"),
+                        "Asr": timings.get("Asr"),
+                        "Maghrib": timings.get("Maghrib"),
+                        "Isha": timings.get("Isha"),
+                        "Tahajjud": tahajjud_str
+                    }
+    return None
+
+# ----------------- КЛАВИАТУРЫ И СТАРТ -----------------
+
+class Form(StatesGroup):
+    city = State()
+
+def main_keyboard():
+    kb = [
+        [KeyboardButton(text="✨ Начать / Шаг дня")],
+        [KeyboardButton(text="⏰ Время намаза"), KeyboardButton(text="📊 Мой прогресс (7/90/365)")],
+        [KeyboardButton(text="📖 Хадисы и Пятница"), KeyboardButton(text="⚙️ Настройки и Режимы")]
+    ]
+    return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(storage=MemoryStorage())
+
+@dp.message(CommandStart())
+async def cmd_start(message: Message):
+    profile = get_user_profile(message.from_user.id)
+    mode_name = {
+        "basic": "🟢 Базовый (5 намазов + азкары)",
+        "tahajjud": "🌙 5 Намазов + Тахаджуд",
+        "full": "🚀 Полный рост (Намазы + Тахаджуд + Коран + Книги + Спорт)"
+    }.get(profile['mode'], "Полный рост")
+
+    text = (
+        "🌟 **Добро пожаловать в «Амаль 365» — ваш уникальный духовный и интеллектуальный трекер!**\n\n"
+        "Маленькие постоянные дела любимы Всевышним больше всего.\n\n"
+        f"📍 **Город:** {profile['city']}\n"
+        f"🎯 **Текущий режим:** {mode_name}\n"
+        f"🔥 **Серия дней:** {profile['streak']} дн."
     )
-    await callback.message.answer(
-        "Альхамдулиллах! Все обязательные шаги на сегодня уже выполнены! 🌟",
-        reply_markup=reset_kb,
+    await message.answer(text, parse_mode="Markdown", reply_markup=main_keyboard())
+
+# ----------------- ВРЕМЯ НАМАЗА С НАПОМИНАНИЕМ -----------------
+
+@dp.message(F.text == "⏰ Время намаза")
+async def show_prayer_times(message: Message):
+    profile = get_user_profile(message.from_user.id)
+    city = profile['city']
+    data = await get_prayer_data(city)
+
+    if not data:
+        ikb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="⚙️ Изменить город", callback_data="change_city")]
+        ])
+        await message.answer(f"⚠️ Не удалось загрузить время для города **{city}**. Проверьте написание.", parse_mode="Markdown", reply_markup=ikb)
+        return
+
+    is_friday = datetime.datetime.now().weekday() == 4
+    friday_text = ""
+    if is_friday:
+        friday_text = (
+            "\n\n🕌 **СВЯЩЕННАЯ ПЯТНИЦА (ДЖУМА)!**\n"
+            "• Прочитайте суру «Аль-Кахф» 📖\n"
+            "• Произносите много салаватов Пророку ﷺ\n"
+            "• Совершите коллективный Джума-намаз!"
+        )
+
+    text = (
+        f"🕌 **Расписание намазов — {city}**\n"
+        f"*(Авто-поддержка любого города мира)*\n\n"
+        f"🌃 **Тахаджуд**: ~{data['Tahajjud']}\n"
+        f"🌅 **Фаджр**: {data['Fajr']}\n"
+        f"☀️ **Восход**: {data['Sunrise']}\n"
+        f"🏙 **Зухр**: {data['Dhuhr']}\n"
+        f"🌇 **Аср**: {data['Asr']}\n"
+        f"🌆 **Магриб**: {data['Maghrib']}\n"
+        f"🌌 **Иша**: {data['Isha']}"
+        f"{friday_text}\n\n"
+        f"🔔 *Напоминание:* Старайтесь готовиться к намазу за 5–10 минут до его начала!"
     )
-    conn.close()
-    await callback.answer()
-    return
+    await message.answer(text, parse_mode="Markdown")
 
-  hadith = get_unique_hadith(user_id)
-  step_title = STEP_NAMES[current_step]
+# ----------------- ШАГ ДНЯ И ОТМЕТКА -----------------
 
-  keyboard = InlineKeyboardMarkup(
-      inline_keyboard=[
-          [
-              InlineKeyboardButton(
-                  text=f"✅ Отметить {step_title}",
-                  callback_data=f"done_{current_step}",
-              )
-          ]
-      ]
-  )
+@dp.message(F.text == "✨ Начать / Шаг дня")
+async def show_step_of_day(message: Message):
+    profile = get_user_profile(message.from_user.id)
+    user_mode = profile['mode']
+    
+    # Фильтрация шагов под выбранный режим
+    active_steps = [s for s in ALL_STEPS if user_mode in s['modes']]
+    idx = profile['step_index']
 
-  await callback.message.answer(
-      f"📖 **Полезное напоминание:**\n{hadith}\n\nЦель на сейчас:"
-      f" **{step_title}**",
-      reply_markup=keyboard,
-      parse_mode="Markdown",
-  )
-  conn.close()
-  await callback.answer()
+    if idx >= len(active_steps):
+        ikb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Начать новый день", callback_data="reset_steps")]
+        ])
+        await message.answer(
+            "🎉 **МашаАллах! Вы выполнили абсолютно все шаги на сегодня!**\n\n"
+            "Пусть Аллах примет ваше поклонение, спорт, чтение и стремления к росту!",
+            parse_mode="Markdown",
+            reply_markup=ikb
+        )
+        return
 
+    step = active_steps[idx]
+    is_friday = datetime.datetime.now().weekday() == 4
+    friday_note = "\n\n🕌 *Пятничный бонус:* Прочитайте суру «Аль-Кахф» и отправьте салават!" if is_friday else ""
 
-@dp.callback_query(F.data == "reset_today")
-async def reset_today_steps(callback: types.CallbackQuery):
-  user_id = callback.from_user.id
-  today = datetime.now().strftime("%Y-%m-%d")
+    text = (
+        f"📌 **Шаг {idx + 1} из {len(active_steps)}**\n\n"
+        f"### {step['title']}\n\n"
+        f"{step['hadith']}"
+        f"{friday_note}"
+    )
 
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "SELECT tahajjud_enabled FROM users WHERE user_id = ?", (user_id,)
-  )
-  res = cursor.fetchone()
-  tahajjud_en = res[0] if res else 0
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отметить выполненным", callback_data="complete_step")],
+        [InlineKeyboardButton(text="⚙️ Настройки и Режимы", callback_data="open_settings")]
+    ])
 
-  first_step = "tahajjud" if tahajjud_en else "fajr"
-  cursor.execute(
-      "UPDATE users SET current_step = ?, last_date = ? WHERE user_id = ?",
-      (first_step, today, user_id),
-  )
-  cursor.execute(
-      "DELETE FROM progress WHERE user_id = ? AND date = ?", (user_id, today)
-  )
-  conn.commit()
-  conn.close()
+    await message.answer(text, parse_mode="Markdown", reply_markup=ikb)
 
-  await callback.message.answer(
-      "🔄 Ваш день сброшен! Теперь вы можете пройти все шаги с самого начала."
-  )
-  fake_cb = callback
-  fake_cb.data = "next_step"
-  await process_next_step(fake_cb)
+@dp.callback_query(F.data == "complete_step")
+async def complete_step_callback(callback: CallbackQuery):
+    profile = get_user_profile(callback.from_user.id)
+    user_mode = profile['mode']
+    active_steps = [s for s in ALL_STEPS if user_mode in s['modes']]
 
+    new_index = profile['step_index'] + 1
+    update_user_profile(callback.from_user.id, step_index=new_index)
 
-@dp.callback_query(F.data.startswith("done_"))
-async def mark_step_done(callback: types.CallbackQuery):
-  user_id = callback.from_user.id
-  step_done = callback.data.split("_")[1]
-  today = datetime.now().strftime("%Y-%m-%d")
+    if new_index >= len(active_steps):
+        new_streak = profile['streak'] + 1
+        today_str = str(datetime.date.today())
+        update_user_profile(callback.from_user.id, streak=new_streak, last_completed_date=today_str)
+        save_daily_history(callback.from_user.id, len(active_steps), len(active_steps))
 
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-
-  cursor.execute(
-      "INSERT OR REPLACE INTO progress (user_id, date, step, completed) VALUES"
-      " (?, ?, ?, 1)",
-      (user_id, today, step_done),
-  )
-
-  cursor.execute(
-      "SELECT tahajjud_enabled, current_step FROM users WHERE user_id = ?",
-      (user_id,),
-  )
-  res = cursor.fetchone()
-  tahajjud_en, current_step = res[0], res[1]
-
-  order = (
-      STEPS_ORDER_WITH_TAHAJJUD if tahajjud_en else STEPS_ORDER_WITHOUT_TAHAJJUD
-  )
-
-  try:
-    current_index = order.index(step_done)
-    if current_index + 1 < len(order):
-      next_step = order[current_index + 1]
-      cursor.execute(
-          "UPDATE users SET current_step = ? WHERE user_id = ?",
-          (next_step, user_id),
-      )
-      conn.commit()
-      conn.close()
-
-      await callback.message.edit_text(
-          f"✅ {STEP_NAMES[step_done]} успешно отмечен!\nДвигаемся дальше к"
-          f" {STEP_NAMES[next_step]} 🚀"
-      )
-      fake_callback = callback
-      fake_callback.data = "next_step"
-      await process_next_step(fake_callback)
+        await callback.message.edit_text(
+            "🎉 **Альхамдулиллах! Все шаги дня успешно выполнены!**\n\n"
+            f"🔥 Ваша текущая серия (Стрик): **{new_streak} дн.**\n"
+            f"🏆 Вы стали еще сильнее духовно и интеллектуально!",
+            parse_mode="Markdown"
+        )
     else:
-      cursor.execute(
-          "UPDATE users SET current_step = 'completed', streak = streak + 1"
-          " WHERE user_id = ?",
-          (user_id,),
-      )
-      conn.commit()
-      conn.close()
-      await callback.message.edit_text(
-          "✨ **Альхамдулиллах!** Все намазы и азкары на сегодня выполнены!"
-          " Пусть Всевышний примет ваш труд! 🤍"
-      )
-  except Exception as e:
-    conn.close()
-    await callback.message.answer(
-        "Произошла ошибка при обновлении шага. Нажмите /start"
+        next_step = active_steps[new_index]
+        ikb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Отметить выполненным", callback_data="complete_step")]
+        ])
+        await callback.message.edit_text(
+            f"✅ **Отлично! Шаг засчитан.**\n\n"
+            f"Переходим к следующему:\n\n"
+            f"### {next_step['title']}\n\n"
+            f"{next_step['hadith']}",
+            parse_mode="Markdown",
+            reply_markup=ikb
+        )
+    await callback.answer()
+
+@dp.callback_query(F.data == "reset_steps")
+async def reset_steps_callback(callback: CallbackQuery):
+    update_user_profile(callback.from_user.id, step_index=0)
+    await callback.answer("Новый день начат!")
+    await show_step_of_day(callback.message)
+
+# ----------------- ПРОГРЕСС 7 / 90 / 365 ДНЕЙ -----------------
+
+@dp.message(F.text == "📊 Мой прогресс (7/90/365)")
+async def show_progress(message: Message):
+    profile = get_user_profile(message.from_user.id)
+    total_completed_days = get_user_stats(message.from_user.id)
+    streak = profile['streak']
+
+    # Процентные достижения
+    p7 = min(100, int((streak / 7) * 100))
+    p90 = min(100, int((streak / 90) * 100))
+    p365 = min(100, int((streak / 365) * 100))
+
+    text = (
+        "📊 **Ваш личный прогресс роста и поклонения**\n\n"
+        f"🔥 **Текущая серия дней подряд:** {streak} дн.\n"
+        f"📅 **Всего успешных дней в базе:** {total_completed_days} дн.\n\n"
+        f"🎯 **Цели и марафоны:**\n"
+        f"• **7 дней (Неделя):** {p7}% {'✅' if p7 >= 100 else '⏳'}\n"
+        f"• **90 дней (Трансформация):** {p90}% {'✅' if p90 >= 100 else '⏳'}\n"
+        f"• **365 дней (Амаль 365):** {p365}% {'✅' if p365 >= 100 else '⏳'}\n\n"
+        "🤍 Никакой конкуренции с другими — только ваша победа над собой вчерашним!"
+    )
+    await message.answer(text, parse_mode="Markdown")
+
+# ----------------- ХАДИСЫ И ПЯТНИЦА -----------------
+
+@dp.message(F.text == "📖 Хадисы и Пятница")
+async def show_hadiths_and_friday(message: Message):
+    text = (
+        "📖 **Мудрые хадисы про поклонение, спорт и знания:**\n\n"
+        "1️⃣ «Первое, за что спросят человека в День Суда — это намаз» (Тирмизи).\n"
+        "2️⃣ «Сильный верующий лучше и любимее Аллаху, чем слабый» (Муслим).\n"
+        "3️⃣ «Стремление к знаниям — обязанность каждого мусульманина» (Ибн Маджа).\n\n"
+        "🕌 **Пятничные Сунны (Джума):**\n"
+        "• Совершить полное омовение (гусль)\n"
+        "• Надеть чистую одежду\n"
+        "• Прочитать суру «Аль-Кахф» 📖\n"
+        "• Произносить много салаватов Пророку Мухаммаду ﷺ\n"
+        "• Сделать дуа в час принятия (между Асром и Магрибом)"
+    )
+    await message.answer(text, parse_mode="Markdown")
+
+# ----------------- НАСТРОЙКИ И ВЫБОР РЕЖИМА -----------------
+
+@dp.message(F.text == "⚙️ Настройки и Режимы")
+async def show_settings(message: Message):
+    profile = get_user_profile(message.from_user.id)
+    
+    ikb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🟢 Базовый (5 намазов)", callback_data="set_mode_basic")],
+        [InlineKeyboardButton(text="🌙 5 Намазов + Тахаджуд", callback_data="set_mode_tahajjud")],
+        [InlineKeyboardButton(text="🚀 Полный рост (Намазы+Спорт+Книги)", callback_data="set_mode_full")],
+        [InlineKeyboardButton(text="🌆 Изменить город (Любой город мира)", callback_data="change_city")]
+    ])
+    
+    mode_descr = {
+        "basic": "🟢 Базовый (Только 5 намазов и азкары)",
+        "tahajjud": "🌙 5 Намазов + Ночной Тахаджуд",
+        "full": "🚀 Полный рост (Намазы + Тахаджуд + Коран + Спорт + Книги)"
+    }.get(profile['mode'], "Полный рост")
+
+    await message.answer(
+        f"⚙️ **Настройки профиля**\n\n"
+        f"📍 **Текущий город:** {profile['city']}\n"
+        f"🎯 **Выбранный режим:** {mode_descr}\n\n"
+        f"Выберите желаемый режим ниже:",
+        parse_mode="Markdown",
+        reply_markup=ikb
     )
 
-  await callback.answer()
+@dp.callback_query(F.data == "open_settings")
+async def open_settings_cb(callback: CallbackQuery):
+    await show_settings(callback.message)
+    await callback.answer()
 
+@dp.callback_query(F.data.startswith("set_mode_"))
+async def set_mode_cb(callback: CallbackQuery):
+    new_mode = callback.data.replace("set_mode_", "")
+    update_user_profile(callback.from_user.id, mode=new_mode, step_index=0)
+    
+    await callback.answer("Режим успешно обновлен!")
+    await show_settings(callback.message)
 
-# ==========================================
-# 📊 МОЙ ПРОГРЕСС
-# ==========================================
-@dp.message(Command("progress"))
-@dp.callback_query(F.data == "progress")
-async def show_progress(event: types.Message | types.CallbackQuery):
-  user_id = (
-      event.from_user.id
-      if isinstance(event, types.Message)
-      else event.from_user.id
-  )
-  conn = sqlite3.connect("amal365.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "SELECT streak, tahajjud_enabled, city FROM users WHERE user_id = ?",
-      (user_id,),
-  )
-  user = cursor.fetchone()
-  conn.close()
+@dp.callback_query(F.data == "change_city")
+async def change_city_cb(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(Form.city)
+    await callback.message.answer(
+        "✍️ **Напишите название любого города мира** (например: `Нерюнгри`, `Бишкек`, `Москва`, `Дубай`, `Стамбул`):",
+        parse_mode="Markdown"
+    )
+    await callback.answer()
 
-  streak = user[0] if user else 0
-  tahajjud_status = "Включен ✅" if user and user[1] else "Выключен ❌"
-  city = user[2] if user else "Бишкек"
+@dp.message(Form.city)
+async def process_city_input(message: Message, state: FSMContext):
+    new_city = message.text.strip().replace("*", "")
+    update_user_profile(message.from_user.id, city=new_city)
+    await state.clear()
 
-  warm_phrases = [
-      "Никаких рейтингов и сравнений — только ваш личный путь. 🤍",
-      "Шаг за шагом вы растете духовно. Маленькие постоянные дела любимы"
-      " Аллахом.",
-      "Пусть каждый намаз укрепляет ваше сердце и приносит мир.",
-  ]
-  phrase = random.choice(warm_phrases)
+    await message.answer(
+        f"✅ Город успешно изменен на **{new_city}**!\nБот автоматически настроил время намазов.",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard()
+    )
 
-  text = (
-      f"📊 **Личный прогресс**\n\n🔥 Серия дней: **{streak} дн.**\n🌙 Тахаджуд:"
-      f" {tahajjud_status}\n🌍 Город: {city}\n\n_{phrase}_"
-  )
+# ----------------- WEB SERVER ДЛЯ RENDER -----------------
 
-  if isinstance(event, types.Message):
-    await event.answer(text, parse_mode="Markdown")
-  else:
-    await event.message.answer(text, parse_mode="Markdown")
-    await event.answer()
+async def handle_ping(request):
+    return web.Response(text="Amal365 Ultimate Bot is Active!", status=200)
 
-
-async def set_bot_commands():
-  commands = [
-      BotCommand(command="start", description="🏠 Главное меню"),
-      BotCommand(command="progress", description="📊 Мой прогресс"),
-  ]
-  await bot.set_my_commands(commands)
-
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get('/', handle_ping)
+    app.router.add_get('/health', handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    logging.info(f"Web server active on port {port}")
 
 async def main():
-  await set_bot_commands()
-  # Запуск фонового веб-сервера для удовлетворения проверки портов Render
-  asyncio.create_task(start_web_server())
-  # Запуск бота
-  await dp.start_polling(bot)
-
+    init_db()
+    await start_web_server()
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-  asyncio.run(main())
+    asyncio.run(main())
