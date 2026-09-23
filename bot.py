@@ -17,13 +17,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Настройка логирования
+# Логирование
 logging.basicConfig(level=logging.INFO)
 
 # Токен бота
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8944360971:AAHDP5g0ECefyVgiAW4OikkxUpKlYdOqfPw")
 
-# База данных SQLite
+# Файл базы данных
 DB_FILE = "bot_database.db"
 
 # ----------------- РАБОТА С БАЗОЙ ДАННЫХ -----------------
@@ -31,7 +31,6 @@ DB_FILE = "bot_database.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # Таблица пользователей
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -42,7 +41,6 @@ def init_db():
             step_index INTEGER DEFAULT 0
         )
     """)
-    # Таблица просмотренных хадисов
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS seen_hadiths (
             user_id INTEGER,
@@ -50,7 +48,6 @@ def init_db():
             PRIMARY KEY (user_id, hadith_id)
         )
     """)
-    # Таблица истории прогресса для 7/90/365 дней
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS progress_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +55,14 @@ def init_db():
             date TEXT UNIQUE,
             completed_steps INTEGER,
             total_steps INTEGER
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS sent_notifications (
+            user_id INTEGER,
+            date TEXT,
+            prayer TEXT,
+            PRIMARY KEY (user_id, date, prayer)
         )
     """)
     conn.commit()
@@ -76,7 +81,7 @@ def get_user_profile(user_id: int):
     return {
         "user_id": row[0],
         "city": row[1],
-        "mode": row[2],  # 'basic', 'tahajjud', 'full'
+        "mode": row[2],  # 'minimum', 'basic', 'spiritual', 'full'
         "streak": row[3],
         "last_completed_date": row[4],
         "step_index": row[5]
@@ -111,84 +116,116 @@ def get_user_stats(user_id: int):
     conn.close()
     return total_days
 
-# ----------------- ШАГИ ДНЯ, ХАДИСЫ И РОСТ -----------------
+# ----------------- СПИСОК ШАГОВ И РЕЖИМЫ -----------------
 
 ALL_STEPS = [
     {
         "id": "tahajjud",
-        "title": "🌌 1. Ночной намаз (Тахаджуд)",
+        "title": "🌌 **Ночной намаз (Тахаджуд)**",
         "hadith": "📖 *Хадис:* «Лучший намаз после обязательных — это ночной намаз (Тахаджуд)». (Муслим)\n\n✨ *Духовность:* Время искреннего дуа, когда Аллах близок к молящимся.",
-        "modes": ["tahajjud", "full"]
+        "modes": ["basic", "spiritual", "full"]
     },
     {
         "id": "fajr",
-        "title": "🌅 2. Утренний намаз (Фаджр)",
+        "title": "🌅 **Утренний намаз (Фаджр)**",
         "hadith": "📖 *Хадис:* «Тот, кто совершил утренний намаз, находится под защитой Аллаха». (Муслим)\n\n✨ *Напоминание:* 2 ракаата сунны Фаджра лучше, чем весь этот мир.",
-        "modes": ["basic", "tahajjud", "full"]
+        "modes": ["minimum", "basic", "spiritual", "full"]
     },
     {
         "id": "morning_azkar",
-        "title": "☀️ 3. Утренние азкары",
-        "hadith": "📖 *Коран:* «Поминайте Меня, и Я буду помнить о вас...» (Сура Аль-Бакара, 152)\n\n✨ *Защита:* Утренний щит от тревог и негатива на весь день.",
-        "modes": ["basic", "tahajjud", "full"]
+        "title": "☀️ **Утренние азкары (Тексты для чтения)**",
+        "hadith": (
+            "📜 *Основные утренние поминания:*\n\n"
+            "1️⃣ **Аят аль-Курси** (Сура 2, аят 255)\n\n"
+            "2️⃣ **3 Суры Защиты (по 3 раза):**\n"
+            "• Сура «Аль-Ихляс»\n• Сура «Аль-Фаляк»\n• Сура «Ан-Нас»\n\n"
+            "3️⃣ **Защита от вреда (3 раза):**\n"
+            "«Бисми-Лляхи ллязи ля ядурру ма'асмихи шей'ун филь-арды ва ля фис-сама'и ва хувас-Сами'уль-'Алим»\n"
+            "*(С именем Аллаха, с именем Которого ничто не причинит вреда ни на земле, ни на небе)*\n\n"
+            "4️⃣ **Довольство верой (3 раза):**\n"
+            "«Радыйту би-Лляхи Раббан, ва биль-Ислями динан, ва би-Мухаммадин салля-Ллаху 'аляйхи ва салляма набийян»\n\n"
+            "5️⃣ **Главная молитва покаяния (Саййидуль-Истигфар):**\n"
+            "«Аллахумма Анта Рабби ля иляха илля Анта, халяктани ва ана 'абдука...»\n\n"
+            "6️⃣ **Прославление (100 раз):** «Субханаллахи ва бихамдихи»"
+        ),
+        "modes": ["spiritual", "full"]
     },
     {
         "id": "quran",
-        "title": "📖 4. Чтение Священного Корана",
+        "title": "📖 **Чтение Священного Корана**",
         "hadith": "📖 *Хадис:* «Читайте Коран, ибо в День воскрешения он придет заступником за тех, кто его читал». (Муслим)\n\n✨ *Мудрость:* Прочитайте хотя бы 1 страницу с размышлением (Тадаббур).",
-        "modes": ["full"]
+        "modes": ["spiritual", "full"]
+    },
+    {
+        "id": "salawat",
+        "title": "📿 **Салават Пророку Мухаммаду ﷺ**",
+        "hadith": "📖 *Хадис:* «Кто призовет на меня благословение один раз, того Аллах благословит за это десять раз». (Муслим)\n\n✨ *Практика:* Произнесите: *«Аллахумма салли 'аля Мухаммадин ва 'аля али Мухаммад»* (10 или 100 раз).",
+        "modes": ["spiritual", "full"]
     },
     {
         "id": "sport",
-        "title": "🏃‍♂️ 5. Спорт, здоровье и активность",
+        "title": "🏃‍♂️ **Спорт, здоровье и активность**",
         "hadith": "📖 *Хадис:* «Сильный верующий лучше и любимее Аллаху, чем слабый верующий, хотя в обоих есть благо». (Муслим)\n\n✨ *Тело и дух:* Разминка, 10 000 шагов или тренировка.",
         "modes": ["full"]
     },
     {
         "id": "dhuhr",
-        "title": "🏙 6. Полуденный намаз (Зухр)",
+        "title": "🏙 **Полуденный намаз (Зухр)**",
         "hadith": "📖 *Хадис:* «Первое, за что будет спрошен раб в День суда — это его намаз». (Тирмизи)\n\n✨ *Напоминание:* Перерыв посреди дня для перезагрузки души.",
-        "modes": ["basic", "tahajjud", "full"]
+        "modes": ["minimum", "basic", "spiritual", "full"]
     },
     {
         "id": "books",
-        "title": "📚 7. Книги и саморазвитие",
+        "title": "📚 **Книги и саморазвитие**",
         "hadith": "📖 *Хадис:* «Стремление к знаниям — обязанность каждого мусульманина». (Ибн Маджа)\n\n✨ *Интеллект:* 15 минут чтения полезной книги для мышления.",
         "modes": ["full"]
     },
     {
         "id": "asr",
-        "title": "🌇 8. Послеполуденный намаз (Аср)",
+        "title": "🌇 **Послеполуденный намаз (Аср)**",
         "hadith": "📖 *Хадис:* «Кто упустит намаз Аср, тот словно лишился семьи и своего имущества». (Аль-Бухари)\n\n✨ *Напоминание:* Сохраняйте фокус во второй половине дня.",
-        "modes": ["basic", "tahajjud", "full"]
+        "modes": ["minimum", "basic", "spiritual", "full"]
     },
     {
         "id": "maghrib",
-        "title": "🌆 9. Вечерний намаз (Магриб)",
+        "title": "🌆 **Вечерний намаз (Магриб)**",
         "hadith": "📖 *Хадис:* «Молитва — это опора религии». (Тирмизи)\n\n✨ *Благодарность:* Встречайте вечер с благодарностью Всевышнему.",
-        "modes": ["basic", "tahajjud", "full"]
+        "modes": ["minimum", "basic", "spiritual", "full"]
     },
     {
         "id": "isha",
-        "title": "🌌 10. Ночной намаз (Иша)",
+        "title": "🌌 **Ночной намаз (Иша)**",
         "hadith": "📖 *Хадис:* «Кто совершит Иша в джамаате, словно молился половину ночи». (Муслим)\n\n✨ *Завершение:* Достойный финал обязательных поклонений дня.",
-        "modes": ["basic", "tahajjud", "full"]
+        "modes": ["minimum", "basic", "spiritual", "full"]
     },
     {
         "id": "evening_azkar",
-        "title": "🌙 11. Вечерние азкары",
-        "hadith": "📖 *Напоминание:* Чтение Аят аль-Курси и сур Защиты перед сном дарует покой.",
-        "modes": ["basic", "tahajjud", "full"]
+        "title": "🌙 **Вечерние азкары (Тексты для чтения)**",
+        "hadith": (
+            "📜 *Основные вечерние поминания:*\n\n"
+            "1️⃣ **Аят аль-Курси**\n\n"
+            "2️⃣ **3 Суры Защиты (Ихляс, Фаляк, Нас — по 3 раза)**\n\n"
+            "3️⃣ **Защита от зла творений (3 раза):**\n"
+            "«А'узу би-калимати-Лляхит-таммати мин шарри ма халяк»\n"
+            "*(Прибегаю к совершенным словам Аллаха от зла того, что Он создал)*\n\n"
+            "4️⃣ **Приветствие вечера:**\n"
+            "«Амсайна ва амсаль-мульку ли-Ллях, валь-хамду ли-Ллях...»\n"
+            "*(Мы дожили до вечера, и вечер застал владычество принадлежащим Аллаху)*\n\n"
+            "5️⃣ **Вечернее вверение себя Аллаху:**\n"
+            "«Аллахумма би-ка амсайна, ва би-ка асбахна, ва би-ка нахйа, ва би-ка намуту ва иляйкаль-масыр»\n\n"
+            "6️⃣ **Прощение (100 раз):** «Астагфируллах ва атубу илейхи»"
+        ),
+        "modes": ["spiritual", "full"]
     },
     {
         "id": "reflection",
-        "title": "🤍 12. Самоанализ, Истигфар и Дуа перед сном",
-        "hadith": "📖 *Дуа:* «О Аллах, прости мои грехи и направи сунну Творения в мое сердце».\n\n✨ *Итог дня:* Простите всех, кто обидел вас, и спите с чистой душой.",
-        "modes": ["basic", "tahajjud", "full"]
+        "title": "🤍 **Самоанализ, Истигфар и Дуа перед сном**",
+        "hadith": "📖 *Дуа:* «О Аллах, с именем Твоим я укладываюсь на бок и с именем Твоим встаю».\n\n✨ *Итог дня:* Простите всех, кто обидел вас, и спите с чистой душой.",
+        "modes": ["minimum", "basic", "spiritual", "full"]
     }
 ]
 
-# ----------------- ГЛОБАЛЬНЫЙ РАСЧЕТ НАМАЗА (ЛЮБОЙ ГОРОД МИРА) -----------------
+# ----------------- РАСЧЕТ ВРЕМЕНИ И ТАЙМЗОНЫ -----------------
 
 KNOWN_CITIES = {
     "нерюнгри": (56.6667, 124.7167),
@@ -201,7 +238,7 @@ KNOWN_CITIES = {
     "стамбул": (41.0082, 28.9784)
 }
 
-async def get_prayer_data(city_name: str):
+async def get_prayer_data_with_tz(city_name: str):
     city_clean = city_name.strip().lower()
     lat, lng = None, None
 
@@ -212,7 +249,7 @@ async def get_prayer_data(city_name: str):
         if not lat or not lng:
             try:
                 geo_url = f"https://nominatim.openstreetmap.org/search?q={city_name}&format=json&limit=1"
-                headers = {"User-Agent": "Amal365GlobalBot/2.0"}
+                headers = {"User-Agent": "Amal365GlobalBot/3.0"}
                 async with session.get(geo_url, headers=headers) as geo_res:
                     if geo_res.status == 200:
                         geo_json = await geo_res.json()
@@ -231,7 +268,9 @@ async def get_prayer_data(city_name: str):
             if response.status == 200:
                 json_res = await response.json()
                 if json_res.get("code") == 200:
-                    timings = json_res['data']['timings']
+                    data = json_res['data']
+                    timings = data['timings']
+                    tz_name = data.get('meta', {}).get('timezone', 'UTC')
 
                     fmt = "%H:%M"
                     try:
@@ -246,13 +285,16 @@ async def get_prayer_data(city_name: str):
                         tahajjud_str = "02:30"
 
                     return {
-                        "Fajr": timings.get("Fajr"),
-                        "Sunrise": timings.get("Sunrise"),
-                        "Dhuhr": timings.get("Dhuhr"),
-                        "Asr": timings.get("Asr"),
-                        "Maghrib": timings.get("Maghrib"),
-                        "Isha": timings.get("Isha"),
-                        "Tahajjud": tahajjud_str
+                        "timings": {
+                            "Fajr": timings.get("Fajr"),
+                            "Sunrise": timings.get("Sunrise"),
+                            "Dhuhr": timings.get("Dhuhr"),
+                            "Asr": timings.get("Asr"),
+                            "Maghrib": timings.get("Maghrib"),
+                            "Isha": timings.get("Isha"),
+                            "Tahajjud": tahajjud_str
+                        },
+                        "timezone": tz_name
                     }
     return None
 
@@ -276,8 +318,9 @@ dp = Dispatcher(storage=MemoryStorage())
 async def cmd_start(message: Message):
     profile = get_user_profile(message.from_user.id)
     mode_name = {
-        "basic": "🟢 Базовый (5 намазов + азкары)",
-        "tahajjud": "🌙 5 Намазов + Тахаджуд",
+        "minimum": "🟢 Минимум (Только 5 намазов)",
+        "basic": "🌙 Базовый (5 намазов + Тахаджуд)",
+        "spiritual": "🕊 Душевный рост (Коран + Азкары + Салават)",
         "full": "🚀 Полный рост (Намазы + Тахаджуд + Коран + Книги + Спорт)"
     }.get(profile['mode'], "Полный рост")
 
@@ -290,21 +333,22 @@ async def cmd_start(message: Message):
     )
     await message.answer(text, parse_mode="Markdown", reply_markup=main_keyboard())
 
-# ----------------- ВРЕМЯ НАМАЗА С НАПОМИНАНИЕМ -----------------
+# ----------------- ВРЕМЯ НАМАЗА -----------------
 
 @dp.message(F.text == "⏰ Время намаза")
 async def show_prayer_times(message: Message):
     profile = get_user_profile(message.from_user.id)
     city = profile['city']
-    data = await get_prayer_data(city)
+    res = await get_prayer_data_with_tz(city)
 
-    if not data:
+    if not res:
         ikb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="⚙️ Изменить город", callback_data="change_city")]
         ])
         await message.answer(f"⚠️ Не удалось загрузить время для города **{city}**. Проверьте написание.", parse_mode="Markdown", reply_markup=ikb)
         return
 
+    data = res["timings"]
     is_friday = datetime.datetime.now().weekday() == 4
     friday_text = ""
     if is_friday:
@@ -316,8 +360,7 @@ async def show_prayer_times(message: Message):
         )
 
     text = (
-        f"🕌 **Расписание намазов — {city}**\n"
-        f"*(Авто-поддержка любого города мира)*\n\n"
+        f"🕌 **Расписание намазов — {city}**\n\n"
         f"🌃 **Тахаджуд**: ~{data['Tahajjud']}\n"
         f"🌅 **Фаджр**: {data['Fajr']}\n"
         f"☀️ **Восход**: {data['Sunrise']}\n"
@@ -330,14 +373,12 @@ async def show_prayer_times(message: Message):
     )
     await message.answer(text, parse_mode="Markdown")
 
-# ----------------- ШАГ ДНЯ И ОТМЕТКА -----------------
+# ----------------- ШАГ ДНЯ И СОХРАНЕНИЕ ИСТОРИИ -----------------
 
 @dp.message(F.text == "✨ Начать / Шаг дня")
 async def show_step_of_day(message: Message):
     profile = get_user_profile(message.from_user.id)
     user_mode = profile['mode']
-    
-    # Фильтрация шагов под выбранный режим
     active_steps = [s for s in ALL_STEPS if user_mode in s['modes']]
     idx = profile['step_index']
 
@@ -359,7 +400,7 @@ async def show_step_of_day(message: Message):
 
     text = (
         f"📌 **Шаг {idx + 1} из {len(active_steps)}**\n\n"
-        f"### {step['title']}\n\n"
+        f"{step['title']}\n\n"
         f"{step['hadith']}"
         f"{friday_note}"
     )
@@ -377,34 +418,57 @@ async def complete_step_callback(callback: CallbackQuery):
     user_mode = profile['mode']
     active_steps = [s for s in ALL_STEPS if user_mode in s['modes']]
 
-    new_index = profile['step_index'] + 1
+    idx = profile['step_index']
+
+    # 1. Редактируем предыдущее сообщение: помечаем его как выполненное
+    if idx < len(active_steps):
+        completed_step = active_steps[idx]
+        await callback.message.edit_text(
+            f"✅ **ВЫПОЛНЕНО**\n\n"
+            f"{completed_step['title']}\n\n"
+            f"{completed_step['hadith']}",
+            parse_mode="Markdown"
+        )
+
+    new_index = idx + 1
     update_user_profile(callback.from_user.id, step_index=new_index)
 
+    # 2. Отправляем следующий шаг ОТДЕЛЬНЫМ новым сообщением
     if new_index >= len(active_steps):
         new_streak = profile['streak'] + 1
         today_str = str(datetime.date.today())
         update_user_profile(callback.from_user.id, streak=new_streak, last_completed_date=today_str)
         save_daily_history(callback.from_user.id, len(active_steps), len(active_steps))
 
-        await callback.message.edit_text(
+        ikb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Начать новый день", callback_data="reset_steps")]
+        ])
+        await callback.message.answer(
             "🎉 **Альхамдулиллах! Все шаги дня успешно выполнены!**\n\n"
             f"🔥 Ваша текущая серия (Стрик): **{new_streak} дн.**\n"
             f"🏆 Вы стали еще сильнее духовно и интеллектуально!",
-            parse_mode="Markdown"
-        )
-    else:
-        next_step = active_steps[new_index]
-        ikb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Отметить выполненным", callback_data="complete_step")]
-        ])
-        await callback.message.edit_text(
-            f"✅ **Отлично! Шаг засчитан.**\n\n"
-            f"Переходим к следующему:\n\n"
-            f"### {next_step['title']}\n\n"
-            f"{next_step['hadith']}",
             parse_mode="Markdown",
             reply_markup=ikb
         )
+    else:
+        next_step = active_steps[new_index]
+        is_friday = datetime.datetime.now().weekday() == 4
+        friday_note = "\n\n🕌 *Пятничный бонус:* Прочитайте суру «Аль-Кахф» и отправьте салават!" if is_friday else ""
+
+        text = (
+            f"📌 **Шаг {new_index + 1} из {len(active_steps)}**\n\n"
+            f"{next_step['title']}\n\n"
+            f"{next_step['hadith']}"
+            f"{friday_note}"
+        )
+
+        ikb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Отметить выполненным", callback_data="complete_step")],
+            [InlineKeyboardButton(text="⚙️ Настройки и Режимы", callback_data="open_settings")]
+        ])
+
+        await callback.message.answer(text, parse_mode="Markdown", reply_markup=ikb)
+    
     await callback.answer()
 
 @dp.callback_query(F.data == "reset_steps")
@@ -421,7 +485,6 @@ async def show_progress(message: Message):
     total_completed_days = get_user_stats(message.from_user.id)
     streak = profile['streak']
 
-    # Процентные достижения
     p7 = min(100, int((streak / 7) * 100))
     p90 = min(100, int((streak / 90) * 100))
     p365 = min(100, int((streak / 365) * 100))
@@ -463,16 +526,18 @@ async def show_settings(message: Message):
     profile = get_user_profile(message.from_user.id)
     
     ikb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Базовый (5 намазов)", callback_data="set_mode_basic")],
-        [InlineKeyboardButton(text="🌙 5 Намазов + Тахаджуд", callback_data="set_mode_tahajjud")],
-        [InlineKeyboardButton(text="🚀 Полный рост (Намазы+Спорт+Книги)", callback_data="set_mode_full")],
+        [InlineKeyboardButton(text="🟢 Минимум (Только 5 намазов)", callback_data="set_mode_minimum")],
+        [InlineKeyboardButton(text="🌙 Базовый (5 намазов + Тахаджуд)", callback_data="set_mode_basic")],
+        [InlineKeyboardButton(text="🕊 Душевный рост (Коран + Азкары)", callback_data="set_mode_spiritual")],
+        [InlineKeyboardButton(text="🚀 Полный рост (+Спорт +Книги)", callback_data="set_mode_full")],
         [InlineKeyboardButton(text="🌆 Изменить город (Любой город мира)", callback_data="change_city")]
     ])
     
     mode_descr = {
-        "basic": "🟢 Базовый (Только 5 намазов и азкары)",
-        "tahajjud": "🌙 5 Намазов + Ночной Тахаджуд",
-        "full": "🚀 Полный рост (Намазы + Тахаджуд + Коран + Спорт + Книги)"
+        "minimum": "🟢 Минимум (Только 5 намазов)",
+        "basic": "🌙 Базовый (5 намазов + Тахаджуд)",
+        "spiritual": "🕊 Душевный рост (Намазы + Тахаджуд + Коран + Азкары + Салават)",
+        "full": "🚀 Полный рост (Намазы + Тахаджуд + Коран + Спорт + Книги + Азкары + Салават)"
     }.get(profile['mode'], "Полный рост")
 
     await message.answer(
@@ -501,7 +566,7 @@ async def set_mode_cb(callback: CallbackQuery):
 async def change_city_cb(callback: CallbackQuery, state: FSMContext):
     await state.set_state(Form.city)
     await callback.message.answer(
-        "✍️ **Напишите название любого города мира** (например: `Нерюнгри`, `Бишкек`, `Москва`, `Дубай`, `Стамбул`):",
+        "✍️ **Напишите название любого города мира** (например: `Нерюнгри`, `Бишкек`, `Москва`, `Дубай`):",
         parse_mode="Markdown"
     )
     await callback.answer()
@@ -517,6 +582,71 @@ async def process_city_input(message: Message, state: FSMContext):
         parse_mode="Markdown",
         reply_markup=main_keyboard()
     )
+
+# ----------------- ФОНОВЫЕ PUSH-УВЕДОМЛЕНИЯ ЗА 5 МИНУТ -----------------
+
+async def prayer_notification_loop():
+    while True:
+        try:
+            conn = sqlite3.connect(DB_FILE)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, city FROM users")
+            users = cursor.fetchall()
+            conn.close()
+
+            city_map = {}
+            for u_id, city in users:
+                city_map.setdefault(city, []).append(u_id)
+
+            for city, u_ids in city_map.items():
+                res = await get_prayer_data_with_tz(city)
+                if not res:
+                    continue
+
+                timings = res["timings"]
+                tz_name = res["timezone"]
+
+                try:
+                    import zoneinfo
+                    tz = zoneinfo.ZoneInfo(tz_name)
+                except Exception:
+                    tz = datetime.timezone.utc
+
+                now_city = datetime.datetime.now(tz)
+                target_time = (now_city + datetime.timedelta(minutes=5)).strftime("%H:%M")
+                today_str = now_city.strftime("%Y-%m-%d")
+
+                prayer_labels = {
+                    "Fajr": "Фаджра",
+                    "Dhuhr": "Зухра",
+                    "Asr": "Асра",
+                    "Maghrib": "Магриба",
+                    "Isha": "Иша"
+                }
+
+                for p_key, p_name in prayer_labels.items():
+                    p_time = timings.get(p_key)
+                    if p_time and p_time == target_time:
+                        for u_id in u_ids:
+                            conn = sqlite3.connect(DB_FILE)
+                            c = conn.cursor()
+                            c.execute("SELECT 1 FROM sent_notifications WHERE user_id = ? AND date = ? AND prayer = ?", (u_id, today_str, p_key))
+                            already_sent = c.fetchone()
+                            if not already_sent:
+                                c.execute("INSERT INTO sent_notifications (user_id, date, prayer) VALUES (?, ?, ?)", (u_id, today_str, p_key))
+                                conn.commit()
+                                conn.close()
+                                try:
+                                    msg = f"🔔 До наступления намаза **{p_name}** осталось 5 минут!\nВремя совершить омовение и идти навстречу к Аллаху."
+                                    await bot.send_message(u_id, msg, parse_mode="Markdown")
+                                except Exception as err:
+                                    logging.error(f"Failed to send PUSH to {u_id}: {err}")
+                            else:
+                                conn.close()
+        except Exception as e:
+            logging.error(f"Error in notification loop: {e}")
+
+        await asyncio.sleep(40)
 
 # ----------------- WEB SERVER ДЛЯ RENDER -----------------
 
@@ -537,6 +667,7 @@ async def start_web_server():
 async def main():
     init_db()
     await start_web_server()
+    asyncio.create_task(prayer_notification_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
