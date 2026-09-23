@@ -7,7 +7,7 @@ import aiohttp
 from aiohttp import web
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.types import (
     Message, CallbackQuery, 
     ReplyKeyboardMarkup, KeyboardButton, 
@@ -20,9 +20,11 @@ from aiogram.fsm.storage.memory import MemoryStorage
 # Логирование
 logging.basicConfig(level=logging.INFO)
 
-# Токен бота
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8944360971:AAHDP5g0ECefyVgiAW4OikkxUpKlYdOqfPw")
+# Токен берется ТОЛЬКО из переменных окружения (Render / .env)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# Токен бота
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8944360971:AAE04bzC15CnTIQNRRRYbM_j80pmOgR-0ko")
 # Файл базы данных
 DB_FILE = "bot_database.db"
 
@@ -74,7 +76,7 @@ def get_user_profile(user_id: int):
     return {
         "user_id": row[0],
         "city": row[1],
-        "mode": row[2],  # 'minimum', 'basic', 'spiritual', 'full'
+        "mode": row[2],
         "streak": row[3],
         "last_completed_date": row[4],
         "step_index": row[5]
@@ -109,7 +111,7 @@ def get_user_stats(user_id: int):
     conn.close()
     return total_days
 
-# ----------------- СПИСОК ШАГОВ И РЕЖИМЫ -----------------
+# ----------------- СПИСОК ШАГОВ -----------------
 
 ALL_STEPS = [
     {
@@ -133,12 +135,10 @@ ALL_STEPS = [
             "2️⃣ <b>3 Суры Защиты (по 3 раза):</b>\n"
             "• Сура «Аль-Ихляс»\n• Сура «Аль-Фаляк»\n• Сура «Ан-Нас»\n\n"
             "3️⃣ <b>Защита от вреда (3 раза):</b>\n"
-            "<i>«Бисми-Лляхи ллязи ля ядурру ма'асмихи шей'ун филь-арды ва ля фис-сама'и ва хувас-Сами'уль-'Алим»</i>\n"
-            "(С именем Аллаха, с именем Которого ничто не причинит вреда ни на земле, ни на небе)\n\n"
+            "<i>«Бисми-Лляхи ллязи ля ядурру ма'асмихи шей'ун филь-арды ва ля фис-сама'и ва хувас-Сами'уль-'Алим»</i>\n\n"
             "4️⃣ <b>Довольство верой (3 раза):</b>\n"
             "<i>«Радыйту би-Лляхи Раббан, ва биль-Ислями динан, ва би-Мухаммадин салля-Ллаху 'аляйхи ва салляма набийян»</i>\n\n"
-            "5️⃣ <b>Саййидуль-Истигфар (Главное покаяние):</b>\n"
-            "<i>«Аллахумма Анта Рабби ля иляха илля Анта, халяктани ва ана 'абдука...»</i>\n\n"
+            "5️⃣ <b>Саййидуль-Истигфар (Главное покаяние)</b>\n"
             "6️⃣ <b>Прославление (100 раз):</b> <i>«Субханаллахи ва бихамдихи»</i>"
         ),
         "modes": ["spiritual", "full"]
@@ -196,17 +196,13 @@ ALL_STEPS = [
         "title": "🌙 <b>Вечерние азкары</b>",
         "hadith": (
             "📜 <b>Основные вечерние поминания:</b>\n\n"
-            "1️⃣ <b>Аят аль-Курси</b>\n\n"
-            "2️⃣ <b>3 Суры Защиты (Ихляс, Фаляк, Нас — по 3 раза)</b>\n\n"
+            "1️⃣ <b>Аят аль-Курси</b>\n"
+            "2️⃣ <b>3 Суры Защиты (Ихляс, Фаляк, Нас — по 3 раза)</b>\n"
             "3️⃣ <b>Защита от зла творений (3 раза):</b>\n"
             "<i>«А'узу би-калимати-Лляхит-таммати мин шарри ма халяк»</i>\n"
-            "(Прибегаю к совершенным словам Аллаха от зла того, что Он создал)\n\n"
             "4️⃣ <b>Приветствие вечера:</b>\n"
             "<i>«Амсайна ва амсаль-мульку ли-Ллях, валь-хамду ли-Ллях...»</i>\n"
-            "(Мы дожили до вечера, и вечер застал владычество принадлежащим Аллаху)\n\n"
-            "5️⃣ <b>Вечернее вверение себя Аллаху:</b>\n"
-            "<i>«Аллахумма би-ка амсайна, ва би-ка асбахна, ва би-ка нахйа, ва би-ка намуту ва иляйкаль-масыр»</i>\n\n"
-            "6️⃣ <b>Прощение (100 раз):</b> <i>«Астагфируллах ва атубу илейхи»</i>"
+            "5️⃣ <b>Прощение (100 раз):</b> <i>«Астагфируллах ва атубу илейхи»</i>"
         ),
         "modes": ["spiritual", "full"]
     },
@@ -329,7 +325,7 @@ async def cmd_start(message: Message):
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
-# ----------------- ОБРАБОТКА МЕНЮ -----------------
+# ----------------- ОБРАБОТКА МЕНЮ И КОМАНД -----------------
 
 @dp.message(F.text == "⏰ Время намаза")
 async def show_prayer_times(message: Message):
@@ -403,7 +399,7 @@ async def view_evening_azkar_cb(callback: CallbackQuery):
     await callback.message.answer(f"{azkar['title']}\n\n{azkar['hadith']}", parse_mode="HTML")
     await callback.answer()
 
-# ----------------- ШАГ ДНЯ И ИСТОРИЯ -----------------
+# ----------------- ШАГ ДНЯ -----------------
 
 @dp.message(F.text == "✨ Шаг дня")
 async def show_step_of_day(message: Message):
@@ -449,7 +445,6 @@ async def complete_step_callback(callback: CallbackQuery):
     active_steps = [s for s in ALL_STEPS if user_mode in s['modes']]
     idx = profile['step_index']
 
-    # 1. Фиксируем прошлый шаг с плашкой ВЫПОЛНЕНО
     if idx < len(active_steps):
         completed_step = active_steps[idx]
         try:
@@ -465,7 +460,6 @@ async def complete_step_callback(callback: CallbackQuery):
     new_index = idx + 1
     update_user_profile(callback.from_user.id, step_index=new_index)
 
-    # 2. Присылаем новый шаг ОТДЕЛЬНЫМ новым сообщением
     if new_index >= len(active_steps):
         new_streak = profile['streak'] + 1
         today_str = str(datetime.date.today())
@@ -512,6 +506,7 @@ async def reset_steps_callback(callback: CallbackQuery):
 # ----------------- ПРОГРЕСС И НАСТРОЙКИ -----------------
 
 @dp.message(F.text == "📊 Прогресс (7/90/365)")
+@dp.message(Command("progress"))
 async def show_progress(message: Message):
     profile = get_user_profile(message.from_user.id)
     total_completed_days = get_user_stats(message.from_user.id)
