@@ -17,18 +17,12 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# Логирование
 logging.basicConfig(level=logging.INFO)
 
-# Токен берется ТОЛЬКО из переменных окружения (Render / .env)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# Токен бота
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8944360971:AAE04bzC15CnTIQNRRRYbM_j80pmOgR-0ko")
-# Файл базы данных
 DB_FILE = "bot_database.db"
 
-# ----------------- РАБОТА С БАЗОЙ ДАННЫХ -----------------
+# ----------------- БАЗА ДАННЫХ -----------------
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -53,11 +47,11 @@ def init_db():
         )
     """)
     cursor.execute("""
-        CREATE TABLE IF NOT EXISTS sent_notifications (
-            user_id INTEGER,
-            date TEXT,
-            prayer TEXT,
-            PRIMARY KEY (user_id, date, prayer)
+        CREATE TABLE IF NOT EXISTS tasbih_data (
+            user_id INTEGER PRIMARY KEY,
+            dhikr_type TEXT DEFAULT 'subhanallah',
+            count INTEGER DEFAULT 0,
+            target INTEGER DEFAULT 33
         )
     """)
     conn.commit()
@@ -91,148 +85,137 @@ def update_user_profile(user_id: int, **kwargs):
     conn.commit()
     conn.close()
 
-def save_daily_history(user_id: int, completed: int, total: int):
+# --- Работа с Тасбихом ---
+
+def get_tasbih_data(user_id: int):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    today_str = str(datetime.date.today())
-    cursor.execute("""
-        INSERT INTO progress_history (user_id, date, completed_steps, total_steps)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(date) DO UPDATE SET completed_steps = ?, total_steps = ?
-    """, (user_id, today_str, completed, total, completed, total))
+    cursor.execute("SELECT dhikr_type, count, target FROM tasbih_data WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if not row:
+        cursor.execute("INSERT INTO tasbih_data (user_id, dhikr_type, count, target) VALUES (?, 'subhanallah', 0, 33)", (user_id,))
+        conn.commit()
+        row = ('subhanallah', 0, 33)
+    conn.close()
+    return {"dhikr_type": row[0], "count": row[1], "target": row[2]}
+
+def update_tasbih_data(user_id: int, **kwargs):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    fields = ", ".join([f"{k} = ?" for k in kwargs.keys()])
+    values = list(kwargs.values()) + [user_id]
+    cursor.execute(f"UPDATE tasbih_data SET {fields} WHERE user_id = ?", values)
     conn.commit()
     conn.close()
 
-def get_user_stats(user_id: int):
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM progress_history WHERE user_id = ?", (user_id,))
-    total_days = cursor.fetchone()[0]
-    conn.close()
-    return total_days
-
-# ----------------- СПИСОК ШАГОВ -----------------
+# ----------------- ШАГИ ДНЯ -----------------
 
 ALL_STEPS = [
     {
         "id": "tahajjud",
         "title": "🌌 <b>Ночной намаз (Тахаджуд)</b>",
-        "hadith": "📖 <b>Хадис:</b> «Лучший намаз после обязательных — это ночной намаз (Тахаджуд)». (Муслим)\n\n✨ <b>Духовность:</b> Время искреннего дуа, когда Аллах близок к молящимся.",
-        "modes": ["basic", "spiritual", "full"]
+        "hadith": "📖 <b>Хадис:</b> «Лучший намаз после обязательных — это ночной намаз (Тахаджуд)». (Муслим)",
+        "modes": ["basic", "spiritual", "full"],
+        "hour_start": 1
     },
     {
         "id": "fajr",
         "title": "🌅 <b>Утренний намаз (Фаджр)</b>",
-        "hadith": "📖 <b>Хадис:</b> «Тот, кто совершил утренний намаз, находится под защитой Аллаха». (Муслим)\n\n✨ <b>Напоминание:</b> 2 ракаата сунны Фаджра лучше, чем весь этот мир.",
-        "modes": ["minimum", "basic", "spiritual", "full"]
+        "hadith": "📖 <b>Хадис:</b> «Тот, кто совершил утренний намаз, находится под защитой Аллаха». (Муслим)",
+        "modes": ["minimum", "basic", "spiritual", "full"],
+        "hour_start": 4
     },
     {
         "id": "morning_azkar",
         "title": "☀️ <b>Утренние азкары</b>",
-        "hadith": (
-            "📜 <b>Основные утренние поминания:</b>\n\n"
-            "1️⃣ <b>Аят аль-Курси</b> (Сура 2, аят 255)\n\n"
-            "2️⃣ <b>3 Суры Защиты (по 3 раза):</b>\n"
-            "• Сура «Аль-Ихляс»\n• Сура «Аль-Фаляк»\n• Сура «Ан-Нас»\n\n"
-            "3️⃣ <b>Защита от вреда (3 раза):</b>\n"
-            "<i>«Бисми-Лляхи ллязи ля ядурру ма'асмихи шей'ун филь-арды ва ля фис-сама'и ва хувас-Сами'уль-'Алим»</i>\n\n"
-            "4️⃣ <b>Довольство верой (3 раза):</b>\n"
-            "<i>«Радыйту би-Лляхи Раббан, ва биль-Ислями динан, ва би-Мухаммадин салля-Ллаху 'аляйхи ва салляма набийян»</i>\n\n"
-            "5️⃣ <b>Саййидуль-Истигфар (Главное покаяние)</b>\n"
-            "6️⃣ <b>Прославление (100 раз):</b> <i>«Субханаллахи ва бихамдихи»</i>"
-        ),
-        "modes": ["spiritual", "full"]
+        "hadith": "📜 <b>Утренние поминания:</b> Аят аль-Курси, 3 суры защиты, «Бисми-Лляхи ллязи...», «Радыйту би-Лляхи...»",
+        "modes": ["spiritual", "full"],
+        "hour_start": 6
     },
     {
         "id": "quran",
         "title": "📖 <b>Чтение Священного Корана</b>",
-        "hadith": "📖 <b>Хадис:</b> «Читайте Коран, ибо в День воскрешения он придет заступником за тех, кто его читал». (Муслим)\n\n✨ <b>Мудрость:</b> Прочитайте хотя бы 1 страницу с размышлением (Тадаббур).",
-        "modes": ["spiritual", "full"]
+        "hadith": "📖 <b>Хадис:</b> «Читайте Коран, ибо в День воскрешения он придет заступником за тех, кто его читал». (Муслим)",
+        "modes": ["spiritual", "full"],
+        "hour_start": 8
     },
     {
         "id": "salawat",
         "title": "📿 <b>Салават Пророку Мухаммаду ﷺ</b>",
-        "hadith": "📖 <b>Хадис:</b> «Кто призовет на меня благословение один раз, того Аллах благословит за это десять раз». (Муслим)\n\n✨ <b>Практика:</b> Произнесите: <i>«Аллахумма салли 'аля Мухаммадин ва 'аля али Мухаммад»</i> (10 или 100 раз).",
-        "modes": ["spiritual", "full"]
+        "hadith": "📖 <b>Хадис:</b> «Кто призовет на меня благословение один раз, того Аллах благословит за это десять раз». (Муслим)",
+        "modes": ["spiritual", "full"],
+        "hour_start": 10
     },
     {
         "id": "sport",
         "title": "🏃‍♂️ <b>Спорт, здоровье и активность</b>",
-        "hadith": "📖 <b>Хадис:</b> «Сильный верующий лучше и любимее Аллаху, чем слабый верующий, хотя в обоих есть благо». (Муслим)\n\n✨ <b>Тело и дух:</b> Разминка, 10 000 шагов или тренировка.",
-        "modes": ["full"]
+        "hadith": "📖 <b>Хадис:</b> «Сильный верующий лучше и любимее Аллаху, чем слабый верующий...» (Муслим)",
+        "modes": ["full"],
+        "hour_start": 11
     },
     {
         "id": "dhuhr",
         "title": "🏙 <b>Полуденный намаз (Зухр)</b>",
-        "hadith": "📖 <b>Хадис:</b> «Первое, за что будет спрошен раб в День суда — это его намаз». (Тирмизи)\n\n✨ <b>Напоминание:</b> Перерыв посреди дня для перезагрузки души.",
-        "modes": ["minimum", "basic", "spiritual", "full"]
+        "hadith": "📖 <b>Хадис:</b> «Первое, за что будет спрошен раб в День суда — это его намаз». (Тирмизи)",
+        "modes": ["minimum", "basic", "spiritual", "full"],
+        "hour_start": 12
     },
     {
         "id": "books",
         "title": "📚 <b>Книги и саморазвитие</b>",
-        "hadith": "📖 <b>Хадис:</b> «Стремление к знаниям — обязанность каждого мусульманина». (Ибн Маджа)\n\n✨ <b>Интеллект:</b> 15 минут чтения полезной книги для мышления.",
-        "modes": ["full"]
+        "hadith": "📖 <b>Хадис:</b> «Стремление к знаниям — обязанность каждого мусульманина». (Ибн Маджа)",
+        "modes": ["full"],
+        "hour_start": 14
     },
     {
         "id": "asr",
         "title": "🌇 <b>Послеполуденный намаз (Аср)</b>",
-        "hadith": "📖 <b>Хадис:</b> «Кто упустит намаз Аср, тот словно лишился семьи и своего имущества». (Аль-Бухари)\n\n✨ <b>Напоминание:</b> Сохраняйте фокус во второй половине дня.",
-        "modes": ["minimum", "basic", "spiritual", "full"]
+        "hadith": "📖 <b>Хадис:</b> «Кто упустит намаз Аср, тот словно лишился семьи и своего имущества». (Аль-Бухари)",
+        "modes": ["minimum", "basic", "spiritual", "full"],
+        "hour_start": 15
     },
     {
         "id": "maghrib",
         "title": "🌆 <b>Вечерний намаз (Магриб)</b>",
-        "hadith": "📖 <b>Хадис:</b> «Молитва — это опора религии». (Тирмизи)\n\n✨ <b>Благодарность:</b> Встречайте вечер с благодарностью Всевышнему.",
-        "modes": ["minimum", "basic", "spiritual", "full"]
+        "hadith": "📖 <b>Хадис:</b> «Молитва — это опора религии». (Тирмизи)",
+        "modes": ["minimum", "basic", "spiritual", "full"],
+        "hour_start": 18
     },
     {
         "id": "isha",
         "title": "🌌 <b>Ночной намаз (Иша)</b>",
-        "hadith": "📖 <b>Хадис:</b> «Кто совершит Иша в джамаате, словно молился половину ночи». (Муслим)\n\n✨ <b>Завершение:</b> Достойный финал обязательных поклонений дня.",
-        "modes": ["minimum", "basic", "spiritual", "full"]
+        "hadith": "📖 <b>Хадис:</b> «Кто совершит Иша в джамаате, словно молился половину ночи». (Муслим)",
+        "modes": ["minimum", "basic", "spiritual", "full"],
+        "hour_start": 20
     },
     {
         "id": "evening_azkar",
         "title": "🌙 <b>Вечерние азкары</b>",
-        "hadith": (
-            "📜 <b>Основные вечерние поминания:</b>\n\n"
-            "1️⃣ <b>Аят аль-Курси</b>\n"
-            "2️⃣ <b>3 Суры Защиты (Ихляс, Фаляк, Нас — по 3 раза)</b>\n"
-            "3️⃣ <b>Защита от зла творений (3 раза):</b>\n"
-            "<i>«А'узу би-калимати-Лляхит-таммати мин шарри ма халяк»</i>\n"
-            "4️⃣ <b>Приветствие вечера:</b>\n"
-            "<i>«Амсайна ва амсаль-мульку ли-Ллях, валь-хамду ли-Ллях...»</i>\n"
-            "5️⃣ <b>Прощение (100 раз):</b> <i>«Астагфируллах ва атубу илейхи»</i>"
-        ),
-        "modes": ["spiritual", "full"]
+        "hadith": "📜 <b>Вечерние поминания:</b> Аят аль-Курси, 3 суры защиты, «А'узу би-калимати-Лляхи...», «Астагфируллах...»",
+        "modes": ["spiritual", "full"],
+        "hour_start": 21
     },
     {
         "id": "reflection",
-        "title": "🤍 <b>Самоанализ, Истигфар и Дуа перед сном</b>",
-        "hadith": "📖 <b>Дуа:</b> «О Аллах, с именем Твоим я укладываюсь на бок и с именем Твоим встаю».\n\n✨ <b>Итог дня:</b> Простите всех, кто обидел вас, и спите с чистой душой.",
-        "modes": ["minimum", "basic", "spiritual", "full"]
+        "title": "🤍 <b>Самоанализ и Дуа перед сном</b>",
+        "hadith": "✨ <b>Итог дня:</b> Простите всех, кто обидел вас, и спите с чистой душой.",
+        "modes": ["minimum", "basic", "spiritual", "full"],
+        "hour_start": 22
     }
 ]
 
-# ----------------- РАСЧЕТ ВРЕМЕНИ -----------------
+# ----------------- РАСПИСАНИЕ НАМАЗОВ -----------------
 
 KNOWN_CITIES = {
     "нерюнгри": (56.6667, 124.7167),
-    "neryungri": (56.6667, 124.7167),
     "бишкек": (42.8746, 74.5698),
     "якутск": (62.0355, 129.6755),
-    "москва": (55.7558, 37.6173),
-    "казань": (55.7887, 49.1221),
-    "дубай": (25.2048, 55.2708),
-    "стамбул": (41.0082, 28.9784)
+    "москва": (55.7558, 37.6173)
 }
 
 async def get_prayer_data_with_tz(city_name: str):
     city_clean = city_name.strip().lower()
-    lat, lng = None, None
-
-    if city_clean in KNOWN_CITIES:
-        lat, lng = KNOWN_CITIES[city_clean]
+    lat, lng = KNOWN_CITIES.get(city_clean, (None, None))
 
     async with aiohttp.ClientSession() as session:
         if not lat or not lng:
@@ -248,10 +231,7 @@ async def get_prayer_data_with_tz(city_name: str):
             except Exception:
                 pass
 
-        if lat and lng:
-            url = f"http://api.aladhan.com/v1/timings?latitude={lat}&longitude={lng}&method=3"
-        else:
-            url = f"http://api.aladhan.com/v1/timingsByCity?city={city_name}&country=&method=3"
+        url = f"http://api.aladhan.com/v1/timings?latitude={lat}&longitude={lng}&method=3" if lat else f"http://api.aladhan.com/v1/timingsByCity?city={city_name}&country=&method=3"
 
         async with session.get(url) as response:
             if response.status == 200:
@@ -259,8 +239,7 @@ async def get_prayer_data_with_tz(city_name: str):
                 if json_res.get("code") == 200:
                     data = json_res['data']
                     timings = data['timings']
-                    tz_name = data.get('meta', {}).get('timezone', 'UTC')
-
+                    
                     fmt = "%H:%M"
                     try:
                         isha_str = timings['Isha'].split()[0]
@@ -269,8 +248,7 @@ async def get_prayer_data_with_tz(city_name: str):
                         fajr_dt = datetime.datetime.strptime(fajr_str, fmt)
                         if fajr_dt <= isha_dt:
                             fajr_dt += datetime.timedelta(days=1)
-                        night_dur = fajr_dt - isha_dt
-                        tahajjud_dt = isha_dt + (night_dur * (2/3))
+                        tahajjud_dt = isha_dt + ((fajr_dt - isha_dt) * (2/3))
                         tahajjud_str = tahajjud_dt.strftime("%H:%M")
                     except Exception:
                         tahajjud_str = "02:30"
@@ -284,21 +262,21 @@ async def get_prayer_data_with_tz(city_name: str):
                             "Maghrib": timings.get("Maghrib").split()[0],
                             "Isha": timings.get("Isha").split()[0],
                             "Tahajjud": tahajjud_str
-                        },
-                        "timezone": tz_name
+                        }
                     }
     return None
 
-# ----------------- КЛАВИАТУРЫ -----------------
+# ----------------- КЛАВИАТУРЫ И МЕНЮ -----------------
 
 class Form(StatesGroup):
     city = State()
 
 def main_keyboard():
     kb = [
-        [KeyboardButton(text="✨ Шаг дня"), KeyboardButton(text="☀️ Утренние и вечерние азкары")],
-        [KeyboardButton(text="⏰ Время намаза"), KeyboardButton(text="🏃‍♂️ Спорт")],
-        [KeyboardButton(text="📊 Прогресс (7/90/365)"), KeyboardButton(text="⚙️ Настройки режима")]
+        [KeyboardButton(text="✨ Шаг дня"), KeyboardButton(text="📿 Тасбих (Четки)")],
+        [KeyboardButton(text="☀️ Утренние и вечерние азкары"), KeyboardButton(text="⏰ Время намаза")],
+        [KeyboardButton(text="🏃‍♂️ Спорт"), KeyboardButton(text="📊 Прогресс")],
+        [KeyboardButton(text="⚙️ Настройки режима")]
     ]
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
 
@@ -308,51 +286,238 @@ dp = Dispatcher(storage=MemoryStorage())
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     profile = get_user_profile(message.from_user.id)
-    mode_name = {
-        "minimum": "🟢 Минимум (Только 5 намазов)",
-        "basic": "🌙 Базовый (5 намазов + Тахаджуд)",
-        "spiritual": "🕊 Душевный рост (Коран + Азкары + Салават)",
-        "full": "🚀 Полный рост (Намазы + Тахаджуд + Коран + Книги + Спорт)"
-    }.get(profile['mode'], "Полный рост")
-
     text = (
         "✨ <b>Ассаляму алейкум!</b>\n\n"
-        "Добро пожаловать в «Амаль 365» — ваш уникальный духовный и интеллектуальный трекер!\n\n"
-        "Маленькие постоянные дела любимы Всевышним больше всего.\n\n"
+        "Добро пожаловать в «Амаль 365» — ваш духовный и интеллектуальный трекер!\n\n"
         f"📍 <b>Город:</b> {profile['city']}\n"
-        f"🎯 <b>Текущий режим:</b> {mode_name}\n"
         f"🔥 <b>Серия дней:</b> {profile['streak']} дн."
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
-# ----------------- ОБРАБОТКА МЕНЮ И КОМАНД -----------------
+# ----------------- 📿 ЭЛЕКТРОННЫЙ ТАСБИХ (ЧЕТКИ) -----------------
+
+DHIKR_TITLES = {
+    "subhanallah": "Субханаллах (سُبْحَانَ ٱللَّٰهِ)",
+    "alhamdulillah": "Альхамдулиллях (ٱلْحَمْدُ لِلَّٰهِ)",
+    "allahuakbar": "Аллаху Акбар (ٱللَّٰهُ أَكْبَرُ)",
+    "astaghfirullah": "Астагфируллах (أَسْتَغْفِرُ ٱللَّٰهَ)",
+    "salawat": "Салават Пророку ﷺ",
+    "la_ilaha_illallah": "Ля иляха илля Ллах (لَا إِلَٰهَ إِلَّا ٱللَّٰهُ)"
+}
+
+def get_tasbih_keyboard(count: int, target: int):
+    target_str = str(target) if target > 0 else "∞"
+    ikb = [
+        [InlineKeyboardButton(text=f"📿 Нажать: {count} / {target_str}", callback_data="tasbih_click")],
+        [
+            InlineKeyboardButton(text="🔄 Сброс", callback_data="tasbih_reset"),
+            InlineKeyboardButton(text="🎯 Цель (33/100/∞)", callback_data="tasbih_change_target")
+        ],
+        [InlineKeyboardButton(text="📜 Выбрать другое поминание", callback_data="tasbih_select_dhikr")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=ikb)
+
+@dp.message(F.text == "📿 Тасбих (Четки)")
+async def show_tasbih(message: Message):
+    data = get_tasbih_data(message.from_user.id)
+    dhikr_name = DHIKR_TITLES.get(data['dhikr_type'], "Зикр")
+    
+    text = (
+        f"📿 <b>Электронный Тасбих</b>\n\n"
+        f"<b>Текущее поминание:</b>\n✨ {dhikr_name}\n\n"
+        f"Нажимайте на кнопку ниже, чтобы вести счет:"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=get_tasbih_keyboard(data['count'], data['target']))
+
+@dp.callback_query(F.data == "tasbih_click")
+async def tasbih_click_cb(callback: CallbackQuery):
+    data = get_tasbih_data(callback.from_user.id)
+    new_count = data['count'] + 1
+    target = data['target']
+
+    update_tasbih_data(callback.from_user.id, count=new_count)
+
+    # Проверка достижения цели
+    if target > 0 and new_count == target:
+        await callback.answer(f"🎉 МашаАллах! Цель в {target} повторений выполнена!", show_alert=True)
+    else:
+        await callback.answer(f"➕ {new_count}")
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=get_tasbih_keyboard(new_count, target))
+    except Exception:
+        pass
+
+@dp.callback_query(F.data == "tasbih_reset")
+async def tasbih_reset_cb(callback: CallbackQuery):
+    data = get_tasbih_data(callback.from_user.id)
+    update_tasbih_data(callback.from_user.id, count=0)
+    await callback.answer("Счет сброшен на 0")
+    try:
+        await callback.message.edit_reply_markup(reply_markup=get_tasbih_keyboard(0, data['target']))
+    except Exception:
+        pass
+
+@dp.callback_query(F.data == "tasbih_change_target")
+async def tasbih_target_cb(callback: CallbackQuery):
+    data = get_tasbih_data(callback.from_user.id)
+    targets = [33, 100, 0] # 0 означает безлимит (∞)
+    curr_idx = targets.index(data['target']) if data['target'] in targets else 0
+    next_target = targets[(curr_idx + 1) % len(targets)]
+
+    update_tasbih_data(callback.from_user.id, target=next_target)
+    target_str = "безлимитный" if next_target == 0 else f"{next_target}"
+    await callback.answer(f"Режим цели изменен на: {target_str}")
+
+    try:
+        await callback.message.edit_reply_markup(reply_markup=get_tasbih_keyboard(data['count'], next_target))
+    except Exception:
+        pass
+
+@dp.callback_query(F.data == "tasbih_select_dhikr")
+async def tasbih_select_dhikr_cb(callback: CallbackQuery):
+    ikb = [
+        [InlineKeyboardButton(text="Субханаллах", callback_data="set_dhikr_subhanallah")],
+        [InlineKeyboardButton(text="Альхамдулиллях", callback_data="set_dhikr_alhamdulillah")],
+        [InlineKeyboardButton(text="Аллаху Акбар", callback_data="set_dhikr_allahuakbar")],
+        [InlineKeyboardButton(text="Астагфируллах", callback_data="set_dhikr_astaghfirullah")],
+        [InlineKeyboardButton(text="Салават Пророку ﷺ", callback_data="set_dhikr_salawat")],
+        [InlineKeyboardButton(text="Ля иляха илля Ллах", callback_data="set_dhikr_la_ilaha_illallah")]
+    ]
+    await callback.message.edit_text("🤲 <b>Выберите поминание для тасбиха:</b>", parse_mode="HTML", reply_markup=InlineKeyboardMarkup(inline_keyboard=ikb))
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("set_dhikr_"))
+async def set_dhikr_choice_cb(callback: CallbackQuery):
+    dhikr_key = callback.data.replace("set_dhikr_", "")
+    update_tasbih_data(callback.from_user.id, dhikr_type=dhikr_key, count=0)
+    
+    dhikr_name = DHIKR_TITLES.get(dhikr_key, "Зикр")
+    data = get_tasbih_data(callback.from_user.id)
+
+    text = (
+        f"📿 <b>Электронный Тасбих</b>\n\n"
+        f"<b>Текущее поминание:</b>\n✨ {dhikr_name}\n\n"
+        f"Нажимайте на кнопку ниже, чтобы вести счет:"
+    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_tasbih_keyboard(0, data['target']))
+    await callback.answer("Поминание выбрано, счет сброшен!")
+
+# ----------------- ШАГ ДНЯ -----------------
+
+def step_inline_keyboard(current_idx: int, total_steps: int):
+    nav_buttons = []
+    if current_idx > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Пред. шаг", callback_data=f"step_nav_{current_idx - 1}"))
+    if current_idx < total_steps - 1:
+        nav_buttons.append(InlineKeyboardButton(text="След. шаг ➡️", callback_data=f"step_nav_{current_idx + 1}"))
+
+    ikb = [
+        [InlineKeyboardButton(text="✅ Отметить выполненным", callback_data=f"complete_step_{current_idx}")],
+        nav_buttons,
+        [InlineKeyboardButton(text="⚙️ Настройки режима", callback_data="open_settings")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[b for b in ikb if b])
+
+@dp.message(F.text == "✨ Шаг дня")
+async def show_step_of_day(message: Message):
+    profile = get_user_profile(message.from_user.id)
+    active_steps = [s for s in ALL_STEPS if profile['mode'] in s['modes']]
+    idx = profile['step_index']
+    
+    step = active_steps[min(idx, len(active_steps) - 1)]
+
+    text = (
+        f"📌 <b>Шаг {idx + 1} из {len(active_steps)}</b>\n\n"
+        f"{step['title']}\n\n"
+        f"{step['hadith']}"
+    )
+
+    await message.answer(text, parse_mode="HTML", reply_markup=step_inline_keyboard(idx, len(active_steps)))
+
+@dp.callback_query(F.data.startswith("step_nav_"))
+async def step_nav_cb(callback: CallbackQuery):
+    new_idx = int(callback.data.replace("step_nav_", ""))
+    profile = get_user_profile(callback.from_user.id)
+    active_steps = [s for s in ALL_STEPS if profile['mode'] in s['modes']]
+
+    if 0 <= new_idx < len(active_steps):
+        update_user_profile(callback.from_user.id, step_index=new_idx)
+        step = active_steps[new_idx]
+        text = (
+            f"📌 <b>Шаг {new_idx + 1} из {len(active_steps)}</b>\n\n"
+            f"{step['title']}\n\n"
+            f"{step['hadith']}"
+        )
+        try:
+            await callback.message.edit_text(text, parse_mode="HTML", reply_markup=step_inline_keyboard(new_idx, len(active_steps)))
+        except Exception:
+            pass
+    await callback.answer()
+
+@dp.callback_query(F.data.startswith("complete_step_"))
+async def complete_step_callback(callback: CallbackQuery):
+    step_idx = int(callback.data.replace("complete_step_", ""))
+    profile = get_user_profile(callback.from_user.id)
+    active_steps = [s for s in ALL_STEPS if profile['mode'] in s['modes']]
+
+    next_idx = step_idx + 1
+    update_user_profile(callback.from_user.id, step_index=next_idx)
+
+    if next_idx >= len(active_steps):
+        new_streak = profile['streak'] + 1
+        update_user_profile(callback.from_user.id, streak=new_streak, step_index=0)
+        await callback.message.answer(
+            "🎉 <b>Альхамдулиллах! Все шаги дня успешно выполнены!</b>\n\n"
+            f"🔥 Ваша текущая серия: <b>{new_streak} дн.</b>",
+            parse_mode="HTML",
+            reply_markup=main_keyboard()
+        )
+    else:
+        step = active_steps[next_idx]
+        text = (
+            f"✅ <b>Отлично! Следующий шаг:</b>\n\n"
+            f"📌 <b>Шаг {next_idx + 1} из {len(active_steps)}</b>\n\n"
+            f"{step['title']}\n\n"
+            f"{step['hadith']}"
+        )
+        await callback.message.answer(text, parse_mode="HTML", reply_markup=step_inline_keyboard(next_idx, len(active_steps)))
+    
+    await callback.answer("Шаг отмечен!")
+
+# ----------------- ПРОГРЕСС И ОСТАЛЬНЫЕ КОМАНДЫ -----------------
+
+@dp.message(F.text.contains("Прогресс"))
+@dp.message(Command("progress"))
+async def show_progress(message: Message):
+    profile = get_user_profile(message.from_user.id)
+    streak = profile['streak']
+
+    p7 = min(100, int((streak / 7) * 100))
+    p90 = min(100, int((streak / 90) * 100))
+    p365 = min(100, int((streak / 365) * 100))
+
+    text = (
+        "📊 <b>Ваш личный прогресс роста</b>\n\n"
+        f"🔥 <b>Серия дней подряд:</b> {streak} дн.\n\n"
+        f"🎯 <b>Цели:</b>\n"
+        f"• 7 дней: {p7}% {'✅' if p7 >= 100 else '⏳'}\n"
+        f"• 90 дней: {p90}% {'✅' if p90 >= 100 else '⏳'}\n"
+        f"• 365 дней: {p365}% {'✅' if p365 >= 100 else '⏳'}"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
 @dp.message(F.text == "⏰ Время намаза")
 async def show_prayer_times(message: Message):
     profile = get_user_profile(message.from_user.id)
-    city = profile['city']
-    res = await get_prayer_data_with_tz(city)
-
+    res = await get_prayer_data_with_tz(profile['city'])
     if not res:
-        ikb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="⚙️ Изменить город", callback_data="change_city")]
-        ])
-        await message.answer(f"⚠️ Не удалось загрузить время для города <b>{city}</b>. Проверьте написание.", parse_mode="HTML", reply_markup=ikb)
+        await message.answer(f"⚠️ Ошибка загрузки времени для города {profile['city']}.")
         return
 
     data = res["timings"]
-    is_friday = datetime.datetime.now().weekday() == 4
-    friday_text = ""
-    if is_friday:
-        friday_text = (
-            "\n\n🕌 <b>СВЯЩЕННАЯ ПЯТНИЦА (ДЖУМА)!</b>\n"
-            "• Прочитайте суру «Аль-Кахф» 📖\n"
-            "• Произносите много салаватов Пророку ﷺ\n"
-            "• Совершите коллективный Джума-намаз!"
-        )
-
     text = (
-        f"🕌 <b>Расписание намазов — {city}</b>\n\n"
+        f"🕌 <b>Расписание намазов — {profile['city']}</b>\n\n"
         f"🌃 <b>Тахаджуд</b>: ~{data['Tahajjud']}\n"
         f"🌅 <b>Фаджр</b>: {data['Fajr']}\n"
         f"☀️ <b>Восход</b>: {data['Sunrise']}\n"
@@ -360,32 +525,25 @@ async def show_prayer_times(message: Message):
         f"🌇 <b>Аср</b>: {data['Asr']}\n"
         f"🌆 <b>Магриб</b>: {data['Maghrib']}\n"
         f"🌌 <b>Иша</b>: {data['Isha']}"
-        f"{friday_text}\n\n"
-        f"🔔 <i>Напоминание: Старайтесь готовиться к намазу за 5–10 минут до его начала!</i>"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
 @dp.message(F.text == "🏃‍♂️ Спорт")
 async def show_sport_direct(message: Message):
     text = (
-        "🏃‍♂️ <b>Спорт, здоровье и физическая активность</b>\n\n"
+        "🏃‍♂️ <b>Спорт и физическая активность</b>\n\n"
         "📖 <b>Хадис:</b> «Сильный верующий лучше и любимее Аллаху, чем слабый верующий, хотя в обоих есть благо». (Муслим)\n\n"
-        "💪 <b>Рекомендация на сегодня:</b>\n"
-        "• 15-20 минут утренней разминки или зарядки\n"
-        "• 10 000 шагов на свежем воздухе\n"
-        "• Легкая тренировка или прогулка\n\n"
-        "✨ Заботьтесь о своем здоровье — это амана от Всевышнего!"
+        "💪 <b>Рекомендация:</b> 15-20 минут утренней зарядки или 10 000 шагов на свежем воздухе."
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
 @dp.message(F.text == "☀️ Утренние и вечерние азкары")
 async def show_azkar_direct(message: Message):
     ikb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="☀️ Утренние азкары (Текст)", callback_data="view_morning_azkar")],
-        [InlineKeyboardButton(text="🌙 Вечерние азкары (Текст)", callback_data="view_evening_azkar")]
+        [InlineKeyboardButton(text="☀️ Утренние азкары", callback_data="view_morning_azkar")],
+        [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="view_evening_azkar")]
     ])
-    text = "🤲 <b>Выберите, какие поминания вы хотите прочитать:</b>"
-    await message.answer(text, parse_mode="HTML", reply_markup=ikb)
+    await message.answer("🤲 <b>Выберите поминания:</b>", parse_mode="HTML", reply_markup=ikb)
 
 @dp.callback_query(F.data == "view_morning_azkar")
 async def view_morning_azkar_cb(callback: CallbackQuery):
@@ -399,162 +557,17 @@ async def view_evening_azkar_cb(callback: CallbackQuery):
     await callback.message.answer(f"{azkar['title']}\n\n{azkar['hadith']}", parse_mode="HTML")
     await callback.answer()
 
-# ----------------- ШАГ ДНЯ -----------------
-
-@dp.message(F.text == "✨ Шаг дня")
-async def show_step_of_day(message: Message):
-    profile = get_user_profile(message.from_user.id)
-    user_mode = profile['mode']
-    active_steps = [s for s in ALL_STEPS if user_mode in s['modes']]
-    idx = profile['step_index']
-
-    if idx >= len(active_steps):
-        ikb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Начать новый день", callback_data="reset_steps")]
-        ])
-        await message.answer(
-            "🎉 <b>МашаАллах! Вы выполнили абсолютно все шаги на сегодня!</b>\n\n"
-            "Пусть Аллах примет ваше поклонение, спорт, чтение и стремления к росту!",
-            parse_mode="HTML",
-            reply_markup=ikb
-        )
-        return
-
-    step = active_steps[idx]
-    is_friday = datetime.datetime.now().weekday() == 4
-    friday_note = "\n\n🕌 <i>Пятничный бонус: Прочитайте суру «Аль-Кахф» и отправьте салават!</i>" if is_friday else ""
-
-    text = (
-        f"📌 <b>Шаг {idx + 1} из {len(active_steps)}</b>\n\n"
-        f"{step['title']}\n\n"
-        f"{step['hadith']}"
-        f"{friday_note}"
-    )
-
-    ikb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Отметить выполненным", callback_data="complete_step")],
-        [InlineKeyboardButton(text="⚙️ Настройки режима", callback_data="open_settings")]
-    ])
-
-    await message.answer(text, parse_mode="HTML", reply_markup=ikb)
-
-@dp.callback_query(F.data == "complete_step")
-async def complete_step_callback(callback: CallbackQuery):
-    profile = get_user_profile(callback.from_user.id)
-    user_mode = profile['mode']
-    active_steps = [s for s in ALL_STEPS if user_mode in s['modes']]
-    idx = profile['step_index']
-
-    if idx < len(active_steps):
-        completed_step = active_steps[idx]
-        try:
-            await callback.message.edit_text(
-                f"✅ <b>ВЫПОЛНЕНО</b>\n\n"
-                f"{completed_step['title']}\n\n"
-                f"{completed_step['hadith']}",
-                parse_mode="HTML"
-            )
-        except Exception:
-            pass
-
-    new_index = idx + 1
-    update_user_profile(callback.from_user.id, step_index=new_index)
-
-    if new_index >= len(active_steps):
-        new_streak = profile['streak'] + 1
-        today_str = str(datetime.date.today())
-        update_user_profile(callback.from_user.id, streak=new_streak, last_completed_date=today_str)
-        save_daily_history(callback.from_user.id, len(active_steps), len(active_steps))
-
-        ikb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Начать новый день", callback_data="reset_steps")]
-        ])
-        await callback.message.answer(
-            "🎉 <b>Альхамдулиллах! Все шаги дня успешно выполнены!</b>\n\n"
-            f"🔥 Ваша текущая серия (Стрик): <b>{new_streak} дн.</b>\n"
-            f"🏆 Вы стали еще сильнее духовно и интеллектуально!",
-            parse_mode="HTML",
-            reply_markup=ikb
-        )
-    else:
-        next_step = active_steps[new_index]
-        is_friday = datetime.datetime.now().weekday() == 4
-        friday_note = "\n\n🕌 <i>Пятничный бонус: Прочитайте суру «Аль-Кахф» и отправьте салават!</i>" if is_friday else ""
-
-        text = (
-            f"📌 <b>Шаг {new_index + 1} из {len(active_steps)}</b>\n\n"
-            f"{next_step['title']}\n\n"
-            f"{next_step['hadith']}"
-            f"{friday_note}"
-        )
-
-        ikb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="✅ Отметить выполненным", callback_data="complete_step")],
-            [InlineKeyboardButton(text="⚙️ Настройки режима", callback_data="open_settings")]
-        ])
-
-        await callback.message.answer(text, parse_mode="HTML", reply_markup=ikb)
-    
-    await callback.answer()
-
-@dp.callback_query(F.data == "reset_steps")
-async def reset_steps_callback(callback: CallbackQuery):
-    update_user_profile(callback.from_user.id, step_index=0)
-    await callback.answer("Новый день начат!")
-    await show_step_of_day(callback.message)
-
-# ----------------- ПРОГРЕСС И НАСТРОЙКИ -----------------
-
-@dp.message(F.text == "📊 Прогресс (7/90/365)")
-@dp.message(Command("progress"))
-async def show_progress(message: Message):
-    profile = get_user_profile(message.from_user.id)
-    total_completed_days = get_user_stats(message.from_user.id)
-    streak = profile['streak']
-
-    p7 = min(100, int((streak / 7) * 100))
-    p90 = min(100, int((streak / 90) * 100))
-    p365 = min(100, int((streak / 365) * 100))
-
-    text = (
-        "📊 <b>Ваш личный прогресс роста и поклонения</b>\n\n"
-        f"🔥 <b>Текущая серия дней подряд:</b> {streak} дн.\n"
-        f"📅 <b>Всего успешных дней в базе:</b> {total_completed_days} дн.\n\n"
-        f"🎯 <b>Цели и марафоны:</b>\n"
-        f"• <b>7 дней (Неделя):</b> {p7}% {'✅' if p7 >= 100 else '⏳'}\n"
-        f"• <b>90 дней (Трансформация):</b> {p90}% {'✅' if p90 >= 100 else '⏳'}\n"
-        f"• <b>365 дней (Амаль 365):</b> {p365}% {'✅' if p365 >= 100 else '⏳'}\n\n"
-        "🤍 Никакой конкуренции с другими — только ваша победа над собой вчерашним!"
-    )
-    await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
-
 @dp.message(F.text == "⚙️ Настройки режима")
 async def show_settings(message: Message):
     profile = get_user_profile(message.from_user.id)
-    
     ikb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🟢 Минимум (Только 5 намазов)", callback_data="set_mode_minimum")],
-        [InlineKeyboardButton(text="🌙 Базовый (5 намазов + Тахаджуд)", callback_data="set_mode_basic")],
-        [InlineKeyboardButton(text="🕊 Душевный рост (Намазы+Коран+Азкары)", callback_data="set_mode_spiritual")],
-        [InlineKeyboardButton(text="🚀 Полный рост (+Спорт +Книги)", callback_data="set_mode_full")],
+        [InlineKeyboardButton(text="🟢 Минимум", callback_data="set_mode_minimum")],
+        [InlineKeyboardButton(text="🌙 Базовый", callback_data="set_mode_basic")],
+        [InlineKeyboardButton(text="🕊 Душевный рост", callback_data="set_mode_spiritual")],
+        [InlineKeyboardButton(text="🚀 Полный рост", callback_data="set_mode_full")],
         [InlineKeyboardButton(text="🌆 Изменить город", callback_data="change_city")]
     ])
-    
-    mode_descr = {
-        "minimum": "🟢 Минимум (Только 5 намазов)",
-        "basic": "🌙 Базовый (5 намазов + Тахаджуд)",
-        "spiritual": "🕊 Душевный рост (Намазы + Тахаджуд + Коран + Азкары + Салават)",
-        "full": "🚀 Полный рост (Намазы + Тахаджуд + Коран + Спорт + Книги + Азкары + Салават)"
-    }.get(profile['mode'], "Полный рост")
-
-    await message.answer(
-        f"⚙️ <b>Настройки профиля</b>\n\n"
-        f"📍 <b>Текущий город:</b> {profile['city']}\n"
-        f"🎯 <b>Выбранный режим:</b> {mode_descr}\n\n"
-        f"Выберите желаемый режим ниже:",
-        parse_mode="HTML",
-        reply_markup=ikb
-    )
+    await message.answer(f"⚙️ <b>Настройки</b>\n\n📍 <b>Город:</b> {profile['city']}\n🎯 <b>Режим:</b> {profile['mode']}", parse_mode="HTML", reply_markup=ikb)
 
 @dp.callback_query(F.data == "open_settings")
 async def open_settings_cb(callback: CallbackQuery):
@@ -565,103 +578,26 @@ async def open_settings_cb(callback: CallbackQuery):
 async def set_mode_cb(callback: CallbackQuery):
     new_mode = callback.data.replace("set_mode_", "")
     update_user_profile(callback.from_user.id, mode=new_mode, step_index=0)
-    
-    await callback.answer("Режим успешно обновлен!")
+    await callback.answer("Режим обновлен!")
     await show_settings(callback.message)
 
 @dp.callback_query(F.data == "change_city")
 async def change_city_cb(callback: CallbackQuery, state: FSMContext):
     await state.set_state(Form.city)
-    await callback.message.answer(
-        "✍️ <b>Напишите название любого города мира</b> (например: <code>Нерюнгри</code>, <code>Бишкек</code>, <code>Москва</code>, <code>Дубай</code>):",
-        parse_mode="HTML"
-    )
+    await callback.message.answer("✍️ <b>Напишите название города:</b>", parse_mode="HTML")
     await callback.answer()
 
 @dp.message(Form.city)
 async def process_city_input(message: Message, state: FSMContext):
-    new_city = message.text.strip().replace("*", "")
+    new_city = message.text.strip()
     update_user_profile(message.from_user.id, city=new_city)
     await state.clear()
-
-    await message.answer(
-        f"✅ Город успешно изменен на <b>{new_city}</b>!\nБот автоматически настроил время намазов.",
-        parse_mode="HTML",
-        reply_markup=main_keyboard()
-    )
-
-# ----------------- PUSH-УВЕДОМЛЕНИЯ ЗА 5 МИНУТ -----------------
-
-async def prayer_notification_loop():
-    while True:
-        try:
-            conn = sqlite3.connect(DB_FILE)
-            cursor = conn.cursor()
-            cursor.execute("SELECT user_id, city FROM users")
-            users = cursor.fetchall()
-            conn.close()
-
-            city_map = {}
-            for u_id, city in users:
-                city_map.setdefault(city, []).append(u_id)
-
-            for city, u_ids in city_map.items():
-                res = await get_prayer_data_with_tz(city)
-                if not res:
-                    continue
-
-                timings = res["timings"]
-                tz_name = res["timezone"]
-
-                try:
-                    import zoneinfo
-                    tz = zoneinfo.ZoneInfo(tz_name)
-                except Exception:
-                    tz = datetime.timezone.utc
-
-                now_city = datetime.datetime.now(tz)
-                target_time = (now_city + datetime.timedelta(minutes=5)).strftime("%H:%M")
-                today_str = now_city.strftime("%Y-%m-%d")
-
-                prayer_labels = {
-                    "Fajr": "Фаджра",
-                    "Dhuhr": "Зухра",
-                    "Asr": "Асра",
-                    "Maghrib": "Магриба",
-                    "Isha": "Иша"
-                }
-
-                for p_key, p_name in prayer_labels.items():
-                    p_time = timings.get(p_key)
-                    if p_time and p_time == target_time:
-                        for u_id in u_ids:
-                            conn = sqlite3.connect(DB_FILE)
-                            c = conn.cursor()
-                            c.execute("SELECT 1 FROM sent_notifications WHERE user_id = ? AND date = ? AND prayer = ?", (u_id, today_str, p_key))
-                            already_sent = c.fetchone()
-                            if not already_sent:
-                                c.execute("INSERT INTO sent_notifications (user_id, date, prayer) VALUES (?, ?, ?)", (u_id, today_str, p_key))
-                                conn.commit()
-                                conn.close()
-                                try:
-                                    msg = (
-                                        f"🔔 <b>До наступления намаза {p_name} осталось 5 минут!</b>\n"
-                                        f"Время совершить омовение и идти навстречу к Аллаху."
-                                    )
-                                    await bot.send_message(u_id, msg, parse_mode="HTML")
-                                except Exception as err:
-                                    logging.error(f"Failed to send PUSH to {u_id}: {err}")
-                            else:
-                                conn.close()
-        except Exception as e:
-            logging.error(f"Error in notification loop: {e}")
-
-        await asyncio.sleep(40)
+    await message.answer(f"✅ Город изменен на <b>{new_city}</b>!", parse_mode="HTML", reply_markup=main_keyboard())
 
 # ----------------- WEB SERVER ДЛЯ RENDER -----------------
 
 async def handle_ping(request):
-    return web.Response(text="Amal365 Ultimate Bot is Active!", status=200)
+    return web.Response(text="Amal365 Bot Active!", status=200)
 
 async def start_web_server():
     app = web.Application()
@@ -672,12 +608,10 @@ async def start_web_server():
     port = int(os.getenv("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    logging.info(f"Web server active on port {port}")
 
 async def main():
     init_db()
     await start_web_server()
-    asyncio.create_task(prayer_notification_loop())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
