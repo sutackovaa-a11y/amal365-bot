@@ -308,8 +308,8 @@ DHIKR_TITLES = {
 def get_tasbih_keyboard(count: int, target: int):
     target_str = str(target) if target > 0 else "∞"
     ikb = [
-        # Большая кнопка на всю ширину
-        [InlineKeyboardButton(text=f"📿 Нажать: {count} / {target_str}", callback_data="tasbih_click")],
+        # Увеличенная двухстрочная кнопка на всю ширину
+        [InlineKeyboardButton(text=f"📿 НАЖАТЬ ДЛЯ СЧЕТА 📿\n[ {count} / {target_str} ]", callback_data="tasbih_click")],
         # Вспомогательные кнопки
         [
             InlineKeyboardButton(text="🔄 Сброс", callback_data="tasbih_reset"),
