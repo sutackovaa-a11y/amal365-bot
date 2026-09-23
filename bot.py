@@ -46,7 +46,6 @@ def init_db():
             total_steps INTEGER
         )
     """)
-    # Таблица для тасбиха: хранит текущий зикр, цель и счетчики
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS tasbih_state (
             user_id INTEGER PRIMARY KEY,
@@ -92,6 +91,14 @@ def update_user_profile(user_id: int, **kwargs):
     cursor.execute(f"UPDATE users SET {fields} WHERE user_id = ?", values)
     conn.commit()
     conn.close()
+
+def get_all_users():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, city FROM users")
+    rows = cursor.fetchall()
+    conn.close()
+    return rows
 
 # --- Работа с Тасбихом ---
 
@@ -154,7 +161,7 @@ def update_dhikr_count(user_id: int, dhikr_type: str, count: int):
     conn.commit()
     conn.close()
 
-# ----------------- ШАГИ ДНЯ -----------------
+# ----------------- ШАГИ ДНЯ (С ПРИВЯЗКОЙ КО ВРЕМЕНИ) -----------------
 
 ALL_STEPS = [
     {
@@ -162,95 +169,95 @@ ALL_STEPS = [
         "title": "🌌 <b>Ночной намаз (Тахаджуд)</b>",
         "hadith": "📖 <b>Хадис:</b> «Лучший намаз после обязательных — это ночной намаз (Тахаджуд)». (Муслим)",
         "modes": ["basic", "spiritual", "full"],
-        "hour_start": 1
+        "start_hour": 1
     },
     {
         "id": "fajr",
         "title": "🌅 <b>Утренний намаз (Фаджр)</b>",
         "hadith": "📖 <b>Хадис:</b> «Тот, кто совершил утренний намаз, находится под защитой Аллаха». (Муслим)",
         "modes": ["minimum", "basic", "spiritual", "full"],
-        "hour_start": 4
+        "start_hour": 4
     },
     {
         "id": "morning_azkar",
         "title": "☀️ <b>Утренние азкары</b>",
         "hadith": "📜 <b>Утренние поминания:</b> Аят аль-Курси, 3 суры защиты, «Бисми-Лляхи ллязи...», «Радыйту би-Лляхи...»",
         "modes": ["spiritual", "full"],
-        "hour_start": 6
+        "start_hour": 6
     },
     {
         "id": "quran",
         "title": "📖 <b>Чтение Священного Корана</b>",
         "hadith": "📖 <b>Хадис:</b> «Читайте Коран, ибо в День воскрешения он придет заступником за тех, кто его читал». (Муслим)",
         "modes": ["spiritual", "full"],
-        "hour_start": 8
+        "start_hour": 8
     },
     {
         "id": "salawat",
         "title": "📿 <b>Салават Пророку Мухаммаду ﷺ</b>",
         "hadith": "📖 <b>Хадис:</b> «Кто призовет на меня благословение один раз, того Аллах благословит за это десять раз». (Муслим)",
         "modes": ["spiritual", "full"],
-        "hour_start": 10
+        "start_hour": 10
     },
     {
         "id": "sport",
         "title": "🏃‍♂️ <b>Спорт, здоровье и активность</b>",
         "hadith": "📖 <b>Хадис:</b> «Сильный верующий лучше и любимее Аллаху, чем слабый верующий...» (Муслим)",
         "modes": ["full"],
-        "hour_start": 11
+        "start_hour": 11
     },
     {
         "id": "dhuhr",
         "title": "🏙 <b>Полуденный намаз (Зухр)</b>",
         "hadith": "📖 <b>Хадис:</b> «Первое, за что будет спрошен раб в День суда — это его намаз». (Тирмизи)",
         "modes": ["minimum", "basic", "spiritual", "full"],
-        "hour_start": 12
+        "start_hour": 12
     },
     {
         "id": "books",
         "title": "📚 <b>Книги и саморазвитие</b>",
         "hadith": "📖 <b>Хадис:</b> «Стремление к знаниям — обязанность каждого мусульманина». (Ибн Маджа)",
         "modes": ["full"],
-        "hour_start": 14
+        "start_hour": 14
     },
     {
         "id": "asr",
         "title": "🌇 <b>Послеполуденный намаз (Аср)</b>",
         "hadith": "📖 <b>Хадис:</b> «Кто упустит намаз Аср, тот словно лишился семьи и своего имущества». (Аль-Бухари)",
         "modes": ["minimum", "basic", "spiritual", "full"],
-        "hour_start": 15
+        "start_hour": 15
     },
     {
         "id": "maghrib",
         "title": "🌆 <b>Вечерний намаз (Магриб)</b>",
         "hadith": "📖 <b>Хадис:</b> «Молитва — это опора религии». (Тирмизи)",
         "modes": ["minimum", "basic", "spiritual", "full"],
-        "hour_start": 18
+        "start_hour": 18
     },
     {
         "id": "isha",
         "title": "🌌 <b>Ночной намаз (Иша)</b>",
         "hadith": "📖 <b>Хадис:</b> «Кто совершит Иша в джамаате, словно молился половину ночи». (Муслим)",
         "modes": ["minimum", "basic", "spiritual", "full"],
-        "hour_start": 20
+        "start_hour": 20
     },
     {
         "id": "evening_azkar",
         "title": "🌙 <b>Вечерние азкары</b>",
         "hadith": "📜 <b>Вечерние поминания:</b> Аят аль-Курси, 3 суры защиты, «А'узу би-калимати-Лляхи...», «Астагфируллах...»",
         "modes": ["spiritual", "full"],
-        "hour_start": 21
+        "start_hour": 21
     },
     {
         "id": "reflection",
         "title": "🤍 <b>Самоанализ и Дуа перед сном</b>",
         "hadith": "✨ <b>Итог дня:</b> Простите всех, кто обидел вас, и спите с чистой душой.",
         "modes": ["minimum", "basic", "spiritual", "full"],
-        "hour_start": 22
+        "start_hour": 22
     }
 ]
 
-# ----------------- РАСПИСАНИЕ НАМАЗОВ -----------------
+# ----------------- РАСПИСАНИЕ НАМАЗОВ И УВЕДОМЛЕНИЯ -----------------
 
 KNOWN_CITIES = {
     "нерюнгри": (56.6667, 124.7167),
@@ -312,6 +319,50 @@ async def get_prayer_data_with_tz(city_name: str):
                     }
     return None
 
+async def prayer_notifications_worker(bot_instance: Bot):
+    sent_cache = set()
+    while True:
+        now = datetime.datetime.now()
+        current_date_str = now.strftime("%Y-%m-%d")
+        current_time_str = now.strftime("%H:%M")
+        
+        users = get_all_users()
+        for user_id, city in users:
+            try:
+                res = await get_prayer_data_with_tz(city)
+                if not res:
+                    continue
+                timings = res["timings"]
+                
+                prayer_keys = {
+                    "Фаджр": timings["Fajr"],
+                    "Зухр": timings["Dhuhr"],
+                    "Аср": timings["Asr"],
+                    "Магриб": timings["Maghrib"],
+                    "Иша": timings["Isha"]
+                }
+                
+                for p_name, p_time in prayer_keys.items():
+                    p_dt = datetime.datetime.strptime(p_time, "%H:%M")
+                    target_dt = (now.replace(hour=p_dt.hour, minute=p_dt.minute, second=0, microsecond=0) - datetime.timedelta(minutes=5))
+                    target_time_str = target_dt.strftime("%H:%M")
+                    
+                    cache_key = f"{user_id}_{current_date_str}_{p_name}"
+                    if current_time_str == target_time_str and cache_key not in sent_cache:
+                        sent_cache.add(cache_key)
+                        await bot_instance.send_message(
+                            user_id,
+                            f"⏰ <b>Напоминание:</b> До намаза <b>{p_name}</b> осталось 5 минут ({p_time})!",
+                            parse_mode="HTML"
+                        )
+            except Exception:
+                pass
+        
+        if len(sent_cache) > 1000:
+            sent_cache.clear()
+            
+        await asyncio.sleep(60)
+
 # ----------------- КЛАВИАТУРЫ И МЕНЮ -----------------
 
 class Form(StatesGroup):
@@ -340,7 +391,7 @@ async def cmd_start(message: Message):
     )
     await message.answer(text, parse_mode="HTML", reply_markup=main_keyboard())
 
-# ----------------- 📿 ЭЛЕКТРОННЫЙ ТАСБИХ (КОМПАКТНЫЙ РЕЖИМ С ЦЕЛЯМИ) -----------------
+# ----------------- 📿 ЭЛЕКТРОННЫЙ ТАСБИХ -----------------
 
 def get_tasbih_inline_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -429,7 +480,6 @@ async def set_target_value_cb(callback: CallbackQuery):
     update_user_tasbih_settings(callback.from_user.id, target=target)
     await callback.answer(f"Цель установлена: {target if target > 0 else '∞'}")
     
-    # Возвращаемся в главное меню тасбиха
     user_id = callback.from_user.id
     current_dhikr, _ = get_user_tasbih_settings(user_id)
     count = get_dhikr_count(user_id, current_dhikr)
@@ -491,7 +541,7 @@ async def back_to_tasbih_cb(callback: CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_tasbih_inline_keyboard())
     await callback.answer()
 
-# ----------------- ШАГ ДНЯ -----------------
+# ----------------- ШАГ ДНЯ (ПО ВРЕМЕНИ СУТОК) -----------------
 
 def step_inline_keyboard(current_idx: int, total_steps: int):
     nav_buttons = []
@@ -511,9 +561,19 @@ def step_inline_keyboard(current_idx: int, total_steps: int):
 async def show_step_of_day(message: Message):
     profile = get_user_profile(message.from_user.id)
     active_steps = [s for s in ALL_STEPS if profile['mode'] in s['modes']]
-    idx = profile['step_index']
     
-    step = active_steps[min(idx, len(active_steps) - 1)]
+    # Автоматически определяем шаг по текущему часу, если индекс пользователя не был явно изменен
+    current_hour = datetime.datetime.now().hour
+    best_idx = 0
+    for i, step in enumerate(active_steps):
+        if current_hour >= step.get("start_hour", 0):
+            best_idx = i
+            
+    idx = profile.get('step_index', best_idx)
+    if idx >= len(active_steps):
+        idx = best_idx
+    
+    step = active_steps[idx]
 
     text = (
         f"📌 <b>Шаг {idx + 1} из {len(active_steps)}</b>\n\n"
@@ -573,7 +633,7 @@ async def complete_step_callback(callback: CallbackQuery):
     
     await callback.answer("Шаг отмечен!")
 
-# ----------------- ПРОГРЕСС И ОСТАЛЬНЫЕ КОМАНДЫ -----------------
+# ----------------- ПРОГРЕСС И НАМАЗЫ -----------------
 
 @dp.message(F.text.contains("Прогресс"))
 @dp.message(Command("progress"))
@@ -700,6 +760,7 @@ async def start_web_server():
 async def main():
     init_db()
     await start_web_server()
+    asyncio.create_task(prayer_notifications_worker(bot))
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
