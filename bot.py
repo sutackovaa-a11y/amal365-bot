@@ -2,7 +2,7 @@ import asyncio
 import logging
 import random
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 import aiohttp
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
@@ -13,11 +13,9 @@ from aiogram.types import (
     BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    KeyboardButton,
-    ReplyKeyboardMarkup,
 )
 
-# Новый токен интегрирован
+# Токен вашего бота
 TOKEN = "8944360971:AAHDP5g0ECefyVgiAW4OikkxUpKlYdOqfPw"
 
 logging.basicConfig(level=logging.INFO)
@@ -25,9 +23,9 @@ bot = Bot(token=TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# ==========================================
-# 🗄 БАЗА ДАННЫХ SQLITE
-# ==========================================
+
+class SettingsStates(StatesGroup):
+  waiting_for_city = State()
 
 
 def init_db():
@@ -39,7 +37,7 @@ def init_db():
             streak INTEGER DEFAULT 0,
             tahajjud_enabled INTEGER DEFAULT 0,
             city TEXT DEFAULT 'Бишкек',
-            current_step TEXT DEFAULT 'tahajjud',
+            current_step TEXT DEFAULT 'fajr',
             last_date TEXT
         )
     """)
@@ -65,9 +63,6 @@ def init_db():
 
 init_db()
 
-# ==========================================
-# 📜 БАЗА ДОСТОВЕРНЫХ ХАДИСОВ
-# ==========================================
 HADITHS = [
     {
         "id": 1,
@@ -123,12 +118,10 @@ HADITHS = [
 def get_unique_hadith(user_id: int) -> str:
   conn = sqlite3.connect("amal365.db")
   cursor = conn.cursor()
-
   cursor.execute(
       "SELECT hadith_id FROM seen_hadiths WHERE user_id = ?", (user_id,)
   )
   seen = {row[0] for row in cursor.fetchall()}
-
   available = [h for h in HADITHS if h["id"] not in seen]
 
   if not available:
@@ -143,15 +136,31 @@ def get_unique_hadith(user_id: int) -> str:
   )
   conn.commit()
   conn.close()
-
   return chosen["text"]
+
+
+# ==========================================
+# 🕌 ФУНКЦИЯ ПОЛУЧЕНИЯ ВРЕМЕНИ НАМАЗА
+# ==========================================
+async def get_prayer_times(city: str):
+  url = f"http://api.aladhan.com/v1/timingsByCity?city={city}&country=&method=3"
+  async with aiohttp.ClientSession() as session:
+    try:
+      async with session.get(url) as response:
+        if response.status == 200:
+          data = await response.json()
+          return data["data"]["timings"]
+    except Exception as e:
+      logging.error(f"Error fetching prayer times: {e}")
+  return None
 
 
 # ==========================================
 # 🚀 КОМАНДА /START И ГЛАВНОЕ МЕНЮ
 # ==========================================
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message):
+async def cmd_start(message: types.Message, state: FSMContext):
+  await state.clear()
   user_id = message.from_user.id
   today = datetime.now().strftime("%Y-%m-%d")
 
@@ -167,21 +176,18 @@ async def cmd_start(message: types.Message):
   if not user:
     cursor.execute(
         "INSERT INTO users (user_id, streak, tahajjud_enabled, city,"
-        " current_step, last_date) VALUES (?, 0, 0, 'Бишкек', 'tahajjud', ?)",
+        " current_step, last_date) VALUES (?, 0, 0, 'Бишкек', 'fajr', ?)",
         (user_id, today),
     )
     conn.commit()
-    tahajjud_en = 0
-    current_step = "tahajjud"
   else:
     tahajjud_en = user[1]
-    current_step = user[3]
     last_date = user[4]
     if last_date != today:
-      current_step = "tahajjud" if tahajjud_en else "fajr"
+      first_step = "tahajjud" if tahajjud_en else "fajr"
       cursor.execute(
           "UPDATE users SET current_step = ?, last_date = ? WHERE user_id = ?",
-          (current_step, today, user_id),
+          (first_step, today, user_id),
       )
       conn.commit()
 
@@ -191,8 +197,12 @@ async def cmd_start(message: types.Message):
       inline_keyboard=[
           [InlineKeyboardButton(text="✨ Начать / Шаг дня", callback_data="next_step")],
           [
-              InlineKeyboardButton(text="📊 Мой прогресс", callback_data="progress"),
+              InlineKeyboardButton(
+                  text="⏰ Время намаза", callback_data="prayer_times"
+              )
           ],
+          [InlineKeyboardButton(text="📊 Мой прогресс", callback_data="progress")],
+          [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")],
       ]
   )
 
@@ -202,6 +212,168 @@ async def cmd_start(message: types.Message):
       reply_markup=keyboard,
       parse_mode="Markdown",
   )
+
+
+# ==========================================
+# ⏰ ВЫВОД ВРЕМЕНИ НАМАЗА
+# ==========================================
+@dp.callback_query(F.data == "prayer_times")
+async def show_prayer_times(callback: types.CallbackQuery):
+  user_id = callback.from_user.id
+  conn = sqlite3.connect("amal365.db")
+  cursor = conn.cursor()
+  cursor.execute("SELECT city FROM users WHERE user_id = ?", (user_id,))
+  res = cursor.fetchone()
+  conn.close()
+
+  city = res[0] if res else "Бишкек"
+  timings = await get_prayer_times(city)
+
+  if timings:
+    text = (
+        f"🕌 **Расписание намаза на сегодня ({city}):**\n\n"
+        f"🌅 Фаджр (Рассвет): `{timings['Fajr']}`\n"
+        f"☀️ Восход (Шурук): `{timings['Sunrise']}`\n"
+        f"☀️ Зухр (Полудень): `{timings['Dhuhr']}`\n"
+        f"🌆 Аср (Предвечерняя): `{timings['Asr']}`\n"
+        f"🌇 Магриб (Закат): `{timings['Maghrib']}`\n"
+        f"🌃 Иша (Ночная): `{timings['Isha']}`\n"
+    )
+  else:
+    text = (
+        f"⚠️ Не удалось загрузить время для города **{city}**. Убедитесь, что"
+        " название написано правильно в настройках."
+    )
+
+  keyboard = InlineKeyboardMarkup(
+      inline_keyboard=[
+          [
+              InlineKeyboardButton(
+                  text="⚙️ Изменить город", callback_data="change_city"
+              )
+          ],
+          [InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu")],
+      ]
+  )
+
+  await callback.message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+  await callback.answer()
+
+
+# ==========================================
+# ⚙️ НАСТРОЙКИ (ГОРОД И ТАХАДЖУД)
+# ==========================================
+@dp.callback_query(F.data == "settings")
+async def show_settings(callback: types.CallbackQuery):
+  user_id = callback.from_user.id
+  conn = sqlite3.connect("amal365.db")
+  cursor = conn.cursor()
+  cursor.execute(
+      "SELECT tahajjud_enabled, city FROM users WHERE user_id = ?", (user_id,)
+  )
+  res = cursor.fetchone()
+  conn.close()
+
+  tahajjud_en = res[0] if res else 0
+  city = res[1] if res else "Бишкек"
+
+  tahajjud_btn_text = (
+      "🌙 Тахаджуд: Включен ✅" if tahajjud_en else "🌙 Тахаджуд: Выключен ❌"
+  )
+
+  keyboard = InlineKeyboardMarkup(
+      inline_keyboard=[
+          [
+              InlineKeyboardButton(
+                  text=tahajjud_btn_text, callback_data="toggle_tahajjud"
+              )
+          ],
+          [
+              InlineKeyboardButton(
+                  text=f"🌍 Изменить город (сейчас: {city})",
+                  callback_data="change_city",
+              )
+          ],
+          [InlineKeyboardButton(text="🏠 В главное меню", callback_data="main_menu")],
+      ]
+  )
+
+  await callback.message.edit_text(
+      "⚙️ **Настройки бота**\n\nЗдесь вы можете изменить режим (включить"
+      " Тахаджуд) и указать ваш город:",
+      reply_markup=keyboard,
+      parse_mode="Markdown",
+  )
+  await callback.answer()
+
+
+@dp.callback_query(F.data == "toggle_tahajjud")
+async def toggle_tahajjud(callback: types.CallbackQuery):
+  user_id = callback.from_user.id
+  conn = sqlite3.connect("amal365.db")
+  cursor = conn.cursor()
+  cursor.execute(
+      "SELECT tahajjud_enabled FROM users WHERE user_id = ?", (user_id,)
+  )
+  res = cursor.fetchone()
+  new_val = 0 if (res and res[0]) else 1
+
+  cursor.execute(
+      "UPDATE users SET tahajjud_enabled = ? WHERE user_id = ?",
+      (new_val, user_id),
+  )
+  conn.commit()
+  conn.close()
+
+  await show_settings(callback)
+
+
+@dp.callback_query(F.data == "change_city")
+async def ask_city(callback: types.CallbackQuery, state: FSMContext):
+  await callback.message.answer(
+      "✍️ Напишите название вашего города в ответе на это сообщение (например:"
+      " **Нерюнгри** или **Бишкек**):"
+  )
+  await state.set_state(SettingsStates.waiting_for_city)
+  await callback.answer()
+
+
+@dp.message(SettingsStates.waiting_for_city)
+async def save_city(message: types.Message, state: FSMContext):
+  user_id = message.from_user.id
+  new_city = message.text.strip()
+
+  conn = sqlite3.connect("amal365.db")
+  cursor = conn.cursor()
+  cursor.execute(
+      "UPDATE users SET city = ? WHERE user_id = ?", (new_city, user_id)
+  )
+  conn.commit()
+  conn.close()
+
+  await state.clear()
+  await message.answer(
+      f"✅ Город успешно изменен на **{new_city}**!", parse_mode="Markdown"
+  )
+
+  keyboard = InlineKeyboardMarkup(
+      inline_keyboard=[
+          [
+              InlineKeyboardButton(
+                  text="⏰ Посмотреть время намаза", callback_data="prayer_times"
+              )
+          ],
+          [InlineKeyboardButton(text="⚙️ Вернуться в настройки", callback_data="settings")],
+          [InlineKeyboardButton(text="✨ Начать / Шаг дня", callback_data="next_step")],
+      ]
+  )
+  await message.answer("Выберите дальнейшее действие:", reply_markup=keyboard)
+
+
+@dp.callback_query(F.data == "main_menu")
+async def back_to_main(callback: types.CallbackQuery, state: FSMContext):
+  await callback.message.delete()
+  await cmd_start(callback.message, state)
 
 
 # ==========================================
@@ -250,17 +422,31 @@ async def process_next_step(callback: types.CallbackQuery):
       (user_id,),
   )
   res = cursor.fetchone()
-  tahajjud_en, current_step = res[0], res[1]
+  tahajjud_en, current_step = (
+      res[0] if res else 0,
+      res[1] if res else "fajr",
+  )
 
   order = (
       STEPS_ORDER_WITH_TAHAJJUD if tahajjud_en else STEPS_ORDER_WITHOUT_TAHAJJUD
   )
 
-  if current_step not in order:
+  if current_step not in order or current_step == "completed":
+    reset_kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🔄 Начать день заново", callback_data="reset_today"
+                )
+            ]
+        ]
+    )
     await callback.message.answer(
-        "Альхамдулиллах! Все обязательные шаги на сегодня уже выполнены! 🌟"
+        "Альхамдулиллах! Все обязательные шаги на сегодня уже выполнены! 🌟",
+        reply_markup=reset_kb,
     )
     conn.close()
+    await callback.answer()
     return
 
   hadith = get_unique_hadith(user_id)
@@ -285,6 +471,38 @@ async def process_next_step(callback: types.CallbackQuery):
   )
   conn.close()
   await callback.answer()
+
+
+@dp.callback_query(F.data == "reset_today")
+async def reset_today_steps(callback: types.CallbackQuery):
+  user_id = callback.from_user.id
+  today = datetime.now().strftime("%Y-%m-%d")
+
+  conn = sqlite3.connect("amal365.db")
+  cursor = conn.cursor()
+  cursor.execute(
+      "SELECT tahajjud_enabled FROM users WHERE user_id = ?", (user_id,)
+  )
+  res = cursor.fetchone()
+  tahajjud_en = res[0] if res else 0
+
+  first_step = "tahajjud" if tahajjud_en else "fajr"
+  cursor.execute(
+      "UPDATE users SET current_step = ?, last_date = ? WHERE user_id = ?",
+      (first_step, today, user_id),
+  )
+  cursor.execute(
+      "DELETE FROM progress WHERE user_id = ? AND date = ?", (user_id, today)
+  )
+  conn.commit()
+  conn.close()
+
+  await callback.message.answer(
+      "🔄 Ваш день сброшен! Теперь вы можете пройти все шаги с самого начала."
+  )
+  fake_cb = callback
+  fake_cb.data = "next_step"
+  await process_next_step(fake_cb)
 
 
 @dp.callback_query(F.data.startswith("done_"))
@@ -358,7 +576,11 @@ async def mark_step_done(callback: types.CallbackQuery):
 @dp.message(Command("progress"))
 @dp.callback_query(F.data == "progress")
 async def show_progress(event: types.Message | types.CallbackQuery):
-  user_id = event.from_user.id if isinstance(event, types.Message) else event.from_user.id
+  user_id = (
+      event.from_user.id
+      if isinstance(event, types.Message)
+      else event.from_user.id
+  )
   conn = sqlite3.connect("amal365.db")
   cursor = conn.cursor()
   cursor.execute(
@@ -374,7 +596,8 @@ async def show_progress(event: types.Message | types.CallbackQuery):
 
   warm_phrases = [
       "Никаких рейтингов и сравнений — только ваш личный путь. 🤍",
-      "Шаг за шагом вы растете духовно. Маленькие постоянные дела любимы Аллахом.",
+      "Шаг за шагом вы растете духовно. Маленькие постоянные дела любимы"
+      " Аллахом.",
       "Пусть каждый намаз укрепляет ваше сердце и приносит мир.",
   ]
   phrase = random.choice(warm_phrases)
