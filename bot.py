@@ -308,11 +308,14 @@ DHIKR_TITLES = {
 def get_tasbih_keyboard(count: int, target: int):
     target_str = str(target) if target > 0 else "∞"
     ikb = [
+        # Большая кнопка на всю ширину
         [InlineKeyboardButton(text=f"📿 Нажать: {count} / {target_str}", callback_data="tasbih_click")],
+        # Вспомогательные кнопки
         [
             InlineKeyboardButton(text="🔄 Сброс", callback_data="tasbih_reset"),
-            InlineKeyboardButton(text="🎯 Цель (33/100/∞)", callback_data="tasbih_change_target")
+            InlineKeyboardButton(text="🎯 Цель", callback_data="tasbih_change_target")
         ],
+        # Смена зикра
         [InlineKeyboardButton(text="📜 Выбрать другое поминание", callback_data="tasbih_select_dhikr")]
     ]
     return InlineKeyboardMarkup(inline_keyboard=ikb)
@@ -337,7 +340,6 @@ async def tasbih_click_cb(callback: CallbackQuery):
 
     update_tasbih_data(callback.from_user.id, count=new_count)
 
-    # Проверка достижения цели
     if target > 0 and new_count == target:
         await callback.answer(f"🎉 МашаАллах! Цель в {target} повторений выполнена!", show_alert=True)
     else:
@@ -361,7 +363,7 @@ async def tasbih_reset_cb(callback: CallbackQuery):
 @dp.callback_query(F.data == "tasbih_change_target")
 async def tasbih_target_cb(callback: CallbackQuery):
     data = get_tasbih_data(callback.from_user.id)
-    targets = [33, 100, 0] # 0 означает безлимит (∞)
+    targets = [33, 100, 0]
     curr_idx = targets.index(data['target']) if data['target'] in targets else 0
     next_target = targets[(curr_idx + 1) % len(targets)]
 
