@@ -17,8 +17,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-# Токен твоего бота (замени на реальный)
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+# Токен твоего бота (интегрирован)
+TOKEN = "8944360971:AAEIgnIdqu7dMIBiqOAyqQhAIsATx8-qt6w"
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=TOKEN)
