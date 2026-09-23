@@ -562,17 +562,14 @@ async def show_step_of_day(message: Message):
     profile = get_user_profile(message.from_user.id)
     active_steps = [s for s in ALL_STEPS if profile['mode'] in s['modes']]
     
-    # Автоматически определяем шаг по текущему часу, если индекс пользователя не был явно изменен
+    # Всегда определяем шаг по текущему часу, чтобы не застревать на первом шаге
     current_hour = datetime.datetime.now().hour
     best_idx = 0
     for i, step in enumerate(active_steps):
         if current_hour >= step.get("start_hour", 0):
             best_idx = i
             
-    idx = profile.get('step_index', best_idx)
-    if idx >= len(active_steps):
-        idx = best_idx
-    
+    idx = best_idx
     step = active_steps[idx]
 
     text = (
