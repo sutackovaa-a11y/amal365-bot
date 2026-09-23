@@ -33,7 +33,6 @@ dp = Dispatcher(storage=storage)
 def init_db():
   conn = sqlite3.connect("amal365.db")
   cursor = conn.cursor()
-  # Таблица пользователей
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -44,7 +43,6 @@ def init_db():
             last_date TEXT
         )
     """)
-  # Таблица истории выполнения
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS progress (
             user_id INTEGER,
@@ -54,7 +52,6 @@ def init_db():
             PRIMARY KEY (user_id, date, step)
         )
     """)
-  # Таблица просмотренных хадисов (чтобы не повторялись)
   cursor.execute("""
         CREATE TABLE IF NOT EXISTS seen_hadiths (
             user_id INTEGER,
@@ -134,7 +131,7 @@ def get_unique_hadith(user_id: int) -> str:
 
   available = [h for h in HADITHS if h["id"] not in seen]
 
-  if not available:  # Если все посмотрел, сбрасываем круг
+  if not available:
     cursor.execute("DELETE FROM seen_hadiths WHERE user_id = ?", (user_id,))
     conn.commit()
     available = HADITHS
@@ -148,19 +145,6 @@ def get_unique_hadith(user_id: int) -> str:
   conn.close()
 
   return chosen["text"]
-
-
-# ==========================================
-# ⏰ РАСПИСАНИЕ НАМАЗОВ ЧЕРЕЗ API ALADHAN
-# ==========================================
-async def get_prayer_times(city: str):
-  url = f"http://api.aladhan.com/v1/timingsByCity?city={city}&country=&method=3"
-  async with aiohttp.ClientSession() as session:
-    async with session.get(url) as response:
-      if response.status == 200:
-        data = await response.json()
-        return data["data"]["timings"]
-  return None
 
 
 # ==========================================
@@ -193,9 +177,7 @@ async def cmd_start(message: types.Message):
     tahajjud_en = user[1]
     current_step = user[3]
     last_date = user[4]
-    # Проверка смены дня
     if last_date != today:
-      # Сбрасываем на новый день
       current_step = "tahajjud" if tahajjud_en else "fajr"
       cursor.execute(
           "UPDATE users SET current_step = ?, last_date = ? WHERE user_id = ?",
@@ -205,13 +187,11 @@ async def cmd_start(message: types.Message):
 
   conn.close()
 
-  # Клавиатура главного меню
   keyboard = InlineKeyboardMarkup(
       inline_keyboard=[
           [InlineKeyboardButton(text="✨ Начать / Шаг дня", callback_data="next_step")],
           [
               InlineKeyboardButton(text="📊 Мой прогресс", callback_data="progress"),
-              InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings"),
           ],
       ]
   )
@@ -225,16 +205,35 @@ async def cmd_start(message: types.Message):
 
 
 # ==========================================
-# 🔄 ПОШАГОВАЯ ЛОГИКА НАМАЗОВ
+# 🔄 ПОШАГОВАЯ ЛОГИКА НАМАЗОВ И АЗКАРОВ
 # ==========================================
-STEPS_ORDER_WITH_TAHAJJUD = ["tahajjud", "fajr", "dhuhr", "asr", "maghrib", "isha"]
-STEPS_ORDER_WITHOUT_TAHAJJUD = ["fajr", "dhuhr", "asr", "maghrib", "isha"]
+STEPS_ORDER_WITH_TAHAJJUD = [
+    "tahajjud",
+    "fajr",
+    "morning_azkar",
+    "dhuhr",
+    "asr",
+    "evening_azkar",
+    "maghrib",
+    "isha",
+]
+STEPS_ORDER_WITHOUT_TAHAJJUD = [
+    "fajr",
+    "morning_azkar",
+    "dhuhr",
+    "asr",
+    "evening_azkar",
+    "maghrib",
+    "isha",
+]
 
 STEP_NAMES = {
     "tahajjud": "🌙 Тахаджуд",
     "fajr": "🌅 Фаджр",
+    "morning_azkar": "☀️ Утренние азкары",
     "dhuhr": "☀️ Зухр",
     "asr": " عصر Аср",
+    "evening_azkar": "🌆 Вечерние азкары",
     "maghrib": "🌇 Магриб",
     "isha": "🌃 Иша",
 }
@@ -259,7 +258,7 @@ async def process_next_step(callback: types.CallbackQuery):
 
   if current_step not in order:
     await callback.message.answer(
-        "Альхамдулиллах! Все обязательные намазы на сегодня уже выполнены! 🌟"
+        "Альхамдулиллах! Все обязательные шаги на сегодня уже выполнены! 🌟"
     )
     conn.close()
     return
@@ -279,7 +278,8 @@ async def process_next_step(callback: types.CallbackQuery):
   )
 
   await callback.message.answer(
-      f"📖 **Хадис:**\n{hadith}\n\nЦель на сейчас: **{step_title}**",
+      f"📖 **Полезное напоминание:**\n{hadith}\n\nЦель на сейчас:"
+      f" **{step_title}**",
       reply_markup=keyboard,
       parse_mode="Markdown",
   )
@@ -296,7 +296,6 @@ async def mark_step_done(callback: types.CallbackQuery):
   conn = sqlite3.connect("amal365.db")
   cursor = conn.cursor()
 
-  # Записываем в прогресс
   cursor.execute(
       "INSERT OR REPLACE INTO progress (user_id, date, step, completed) VALUES"
       " (?, ?, ?, 1)",
@@ -329,12 +328,10 @@ async def mark_step_done(callback: types.CallbackQuery):
           f"✅ {STEP_NAMES[step_done]} успешно отмечен!\nДвигаемся дальше к"
           f" {STEP_NAMES[next_step]} 🚀"
       )
-      # Сразу выдаем следующий шаг
       fake_callback = callback
       fake_callback.data = "next_step"
       await process_next_step(fake_callback)
     else:
-      # День полностью закрыт!
       cursor.execute(
           "UPDATE users SET current_step = 'completed', streak = streak + 1"
           " WHERE user_id = ?",
@@ -343,7 +340,7 @@ async def mark_step_done(callback: types.CallbackQuery):
       conn.commit()
       conn.close()
       await callback.message.edit_text(
-          "✨ **Альхамдулиллах!** Все намазы и дела на сегодня выполнены!"
+          "✨ **Альхамдулиллах!** Все намазы и азкары на сегодня выполнены!"
           " Пусть Всевышний примет ваш труд! 🤍"
       )
   except Exception as e:
@@ -356,7 +353,7 @@ async def mark_step_done(callback: types.CallbackQuery):
 
 
 # ==========================================
-# 📊 МОЙ ПРОГРЕСС И НАСТРОЙКИ
+# 📊 МОЙ ПРОГРЕСС
 # ==========================================
 @dp.message(Command("progress"))
 @dp.callback_query(F.data == "progress")
@@ -394,7 +391,6 @@ async def show_progress(event: types.Message | types.CallbackQuery):
     await event.answer()
 
 
-# Регистрация системных команд для меню Telegram
 async def set_bot_commands():
   commands = [
       BotCommand(command="start", description="🏠 Главное меню"),
