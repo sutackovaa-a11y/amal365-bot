@@ -4,6 +4,7 @@ import os
 import sqlite3
 from datetime import datetime, timedelta
 import aiohttp
+from aiohttp import web
 
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command
@@ -22,7 +23,7 @@ from aiogram.types import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Безопасное чтение токена из переменных окружения Render
+# Безопасное чтение токена
 API_TOKEN = os.getenv("BOT_TOKEN")
 
 # Инициализация бота и диспетчера
@@ -39,7 +40,6 @@ DB_NAME = "amal365.db"
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    # Таблица пользователей
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS users (
@@ -52,7 +52,6 @@ def init_db():
         )
     """
     )
-    # Таблица тасбиха
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS tasbih (
@@ -143,7 +142,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     conn.close()
 
     if not row or row[0] == 0:
-        # Запрос согласия на обработку условий (Privacy & Terms)
         terms_text = (
             "🌿 **Добро пожаловать в «Амаль 365»!**\n\n"
             "Прежде чем начать наш благословенный путь, пожалуйста, ознакомьтесь с условиями использования и конфиденциальности.\n"
@@ -161,7 +159,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
         await message.answer(terms_text, reply_markup=keyboard, parse_mode="Markdown")
     else:
-        # Если уже зарегистрирован
         await message.answer(
             "Ассаляму алейкум ва рахматуллахи ва баракатух! 🌿\nГлавное меню активировано.",
             reply_markup=get_main_menu_keyboard(),
@@ -222,7 +219,6 @@ async def process_mode_selection(
     )
     conn.commit()
 
-    # Получаем город пользователя для финала
     cursor.execute("SELECT city FROM users WHERE user_id = ?", (user_id,))
     city = cursor.fetchone()[0]
     conn.close()
@@ -278,7 +274,7 @@ async def complete_step(callback: types.CallbackQuery):
     await callback.answer("Шаг засчитан! Баракаллаху фикум.")
 
 
-# ==================== ЭЛЕКТРОННЫЙ ТАСБИХ (Оптимизирован для всех) ====================
+# ==================== ЭЛЕКТРОННЫЙ ТАСБИХ ====================
 @router.message(F.text == "📿 Электронный Тасбих")
 async def menu_tasbih(message: types.Message):
     user_id = message.from_user.id
@@ -390,7 +386,7 @@ async def tasbih_reset(callback: types.CallbackQuery):
     await callback.answer("Счетчик сброшен.")
 
 
-# ==================== ВРЕМЯ НАМАЗА (Aladhan API) ====================
+# ==================== ВРЕМЯ НАМАЗА ====================
 @router.message(F.text == "⏰ Время намаза")
 async def menu_prayer_times(message: types.Message):
     user_id = message.from_user.id
@@ -401,7 +397,6 @@ async def menu_prayer_times(message: types.Message):
     city = row[0] if row else "Нерюнгри"
     conn.close()
 
-    # Запрос к Aladhan API
     api_url = f"http://api.aladhan.com/v1/timingsByCity?city={city}&country=&method=2"
     async with aiohttp.ClientSession() as session:
         async with session.get(api_url) as resp:
@@ -425,7 +420,7 @@ async def menu_prayer_times(message: types.Message):
     await message.answer(prayer_text, parse_mode="Markdown")
 
 
-# ==================== ПРОГРЕСС И МАРАФОНЫ ====================
+# ==================== ПРОГРЕСС ====================
 @router.message(F.text == "📊 Мой прогресс")
 async def menu_progress(message: types.Message):
     user_id = message.from_user.id
@@ -453,7 +448,7 @@ async def menu_progress(message: types.Message):
     await message.answer(progress_text, parse_mode="Markdown")
 
 
-# ==================== ХАДИСЫ И ПЯТНИЦА ====================
+# ==================== ХАДИСЫ ====================
 @router.message(F.text == "📖 Хадисы и Пятница")
 async def menu_hadiths(message: types.Message):
     text = (
@@ -468,7 +463,7 @@ async def menu_hadiths(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 
-# ==================== НАСТРОЙКИ И РЕЖИМЫ ====================
+# ==================== НАСТРОЙКИ ====================
 @router.message(F.text == "⚙️ Настройки и Режимы")
 async def menu_settings(message: types.Message):
     user_id = message.from_user.id
@@ -492,11 +487,33 @@ async def menu_settings(message: types.Message):
     )
 
 
-# ==================== ЗАПУСК БОТА ====================
+# ==================== МИНИ-ВЕБ-СЕРВЕР ДЛЯ RENDER ====================
+async def handle_ping(request):
+    return web.Response(text="Bot is running and alive! 🌿")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render передает свой порт через переменную окружения PORT, по умолчанию берем 10000
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logger.info(f"Веб-сервер для Render успешно запущен на порту {port}")
+
+
+# ==================== ЗАПУСК БОТА И СЕРВЕРА ====================
 async def main():
     init_db()
-    logger.info("Бот «Амаль 365» успешно запущен и готов к работе!")
-    await dp.start_polling(bot)
+    logger.info("Бот «Амаль 365» запущен!")
+    
+    # Запускаем и веб-сервер для Render, и сам опрос Telegram-бота одновременно
+    await asyncio.gather(
+        start_web_server(),
+        dp.start_polling(bot)
+    )
 
 
 if __name__ == "__main__":
