@@ -4,6 +4,7 @@ import os
 import sqlite3
 import urllib.parse
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 import aiohttp
 from aiohttp import web
 
@@ -36,7 +37,7 @@ dp.include_router(router)
 
 DB_NAME = "amal365.db"
 
-# ==================== УМНАЯ ТРАНСЛИТЕРАЦИЯ И КЭШ РАСПИСАНИЯ ====================
+# ==================== КЭШ И ТОЧНЫЙ ГЕОКОДИНГ С ЧАСОВЫМ ПОЯСОМ ====================
 TIMINGS_CACHE = {}
 
 def translit_city(text: str) -> str:
@@ -69,7 +70,7 @@ def translit_city(text: str) -> str:
     }
     return ''.join(cyr_to_lat.get(char, char) for char in text_lower).capitalize()
 
-async def get_timings(city: str):
+async def get_timings_data(city: str):
     today = datetime.now().strftime("%Y-%m-%d")
     cache_key = (city.lower().strip(), today)
     
@@ -78,46 +79,45 @@ async def get_timings(city: str):
     
     lat_city = translit_city(city)
     async with aiohttp.ClientSession() as session:
-        # Уровень 1: Поиск по городу с указанием страны (самый надежный для СНГ)
+        # Уровень 1: Поиск по городу со страной
         try:
             url_1 = f"http://api.aladhan.com/v1/timingsByCity?city={urllib.parse.quote(lat_city)}&country=Russia&method=2"
             async with session.get(url_1, timeout=5) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("code") == 200:
-                        timings = data["data"]["timings"]
-                        TIMINGS_CACHE[cache_key] = timings
-                        return timings
+                        res = {
+                            "timings": data["data"]["timings"],
+                            "timezone": data["data"]["meta"].get("timezone", "UTC")
+                        }
+                        TIMINGS_CACHE[cache_key] = res
+                        return res
         except Exception as e:
             logger.error(f"Level 1 timing error: {e}")
 
-        # Уровень 2: Поиск по городу без страны
+        # Уровень 2: Поиск по адресу (универсальный геокодинг)
         try:
-            url_2 = f"http://api.aladhan.com/v1/timingsByCity?city={urllib.parse.quote(lat_city)}&method=2"
+            url_2 = f"http://api.aladhan.com/v1/timingsByAddress?address={urllib.parse.quote(city)}&method=2"
             async with session.get(url_2, timeout=5) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     if data.get("code") == 200:
-                        timings = data["data"]["timings"]
-                        TIMINGS_CACHE[cache_key] = timings
-                        return timings
+                        res = {
+                            "timings": data["data"]["timings"],
+                            "timezone": data["data"]["meta"].get("timezone", "UTC")
+                        }
+                        TIMINGS_CACHE[cache_key] = res
+                        return res
         except Exception as e:
             logger.error(f"Level 2 timing error: {e}")
 
-        # Уровень 3: Резервный поиск по адресу
-        try:
-            url_3 = f"http://api.aladhan.com/v1/timingsByAddress?address={urllib.parse.quote(city)}&method=2"
-            async with session.get(url_3, timeout=5) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    if data.get("code") == 200:
-                        timings = data["data"]["timings"]
-                        TIMINGS_CACHE[cache_key] = timings
-                        return timings
-        except Exception as e:
-            logger.error(f"Level 3 timing error: {e}")
-
     return None
+
+def get_local_now(timezone_str: str) -> datetime:
+    try:
+        return datetime.now(ZoneInfo(timezone_str))
+    except Exception:
+        return datetime.now()
 
 
 # ==================== БАЗА ДАННЫХ ====================
@@ -364,7 +364,7 @@ async def process_mode_selection(callback: types.CallbackQuery, state: FSMContex
     await callback.message.answer("Выберите нужный раздел в меню:", reply_markup=get_main_menu_keyboard())
 
 
-# ==================== ШАГ ДНЯ (Духовный + Здоровье) ====================
+# ==================== ШАГ ДНЯ (С точным расчетом по часовому поясу) ====================
 @router.message(F.text == "✨ Шаг дня")
 async def menu_daily_step(message: types.Message):
     user_id = message.from_user.id
@@ -375,9 +375,12 @@ async def menu_daily_step(message: types.Message):
     city = row[0] if row and row[0] else "Нерюнгри"
     conn.close()
 
-    timings = await get_timings(city)
+    res = await get_timings_data(city)
     
-    if timings:
+    if res:
+        timings = res["timings"]
+        tz_str = res["timezone"]
+        
         prayers = {
             "Фаджр": timings.get('Fajr'),
             "Зухр": timings.get('Dhuhr'),
@@ -386,8 +389,9 @@ async def menu_daily_step(message: types.Message):
             "Иша": timings.get('Isha')
         }
         
-        now = datetime.now()
-        current_time_str = now.strftime("%H:%M")
+        local_now = get_local_now(tz_str)
+        current_time_str = local_now.strftime("%H:%M")
+        
         next_prayer_name, next_prayer_time = None, None
         
         for name, p_time in prayers.items():
@@ -671,9 +675,10 @@ async def menu_prayer_times(message: types.Message):
     city = row[0] if row and row[0] else "Нерюнгри"
     conn.close()
 
-    timings = await get_timings(city)
+    res = await get_timings_data(city)
     
-    if timings:
+    if res:
+        timings = res["timings"]
         prayer_text = (
             f"🕌 **Расписание намазов — {city}**\n\n"
             f"🌅 Фаджр: {timings.get('Fajr')}\n"
@@ -827,10 +832,6 @@ async def prayer_notification_loop():
     while True:
         try:
             await asyncio.sleep(60)
-            now = datetime.now()
-            current_date = now.strftime("%Y-%m-%d")
-            current_time_str = now.strftime("%H:%M")
-            
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT user_id, city FROM users WHERE consent = 1")
@@ -841,9 +842,15 @@ async def prayer_notification_loop():
                 if not city:
                     city = "Нерюнгри"
                 
-                timings = await get_timings(city)
-                if not timings:
+                res = await get_timings_data(city)
+                if not res:
                     continue
+                
+                timings = res["timings"]
+                tz_str = res["timezone"]
+                local_now = get_local_now(tz_str)
+                current_date = local_now.strftime("%Y-%m-%d")
+                current_time_str = local_now.strftime("%H:%M")
                 
                 prayers = {
                     "Фаджр": timings.get('Fajr'),
@@ -944,7 +951,7 @@ async def start_web_server():
 # ==================== ЗАПУСК ====================
 async def main():
     init_db()
-    logger.info("Bot «Амаль 365» fully re-initialized.")
+    logger.info("Bot «Амаль 365» fully re-initialized with Timezone support.")
     
     await asyncio.gather(
         start_web_server(),
