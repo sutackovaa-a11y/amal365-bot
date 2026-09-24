@@ -18,6 +18,7 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
+from aiogram.exceptions import TelegramBadRequest
 
 # Настройка логирования уровня Enterprise
 logging.basicConfig(
@@ -36,6 +37,29 @@ dp.include_router(router)
 
 DB_NAME = "amal365.db"
 
+# ==================== ТРАНСЛИТЕРАЦИЯ ГОРОДОВ ДЛЯ API ====================
+def transliterate_city(city_name: str) -> str:
+    translit_map = {
+        'нерюнгри': 'Neryungri',
+        'москва': 'Moscow',
+        'санкт-петербург': 'Saint Petersburg',
+        'казань': 'Kazan',
+        'уфа': 'Ufa',
+        'грозный': 'Grozny',
+        'махачкала': 'Makhachkala',
+        'алматы': 'Almaty',
+        'астана': 'Astana',
+        'ташкент': 'Tashkent',
+        'бишкек': 'Bishkek',
+        'баку': 'Baku',
+        'дубай': 'Dubai',
+        'стамбул': 'Istanbul',
+        'лондон': 'London'
+    }
+    cleaned = city_name.strip().lower()
+    return translit_map.get(cleaned, city_name.strip())
+
+
 # ==================== БАЗА ДАННЫХ И МИГРАЦИИ ====================
 def init_db():
     conn = sqlite3.connect(DB_NAME)
@@ -51,7 +75,7 @@ def init_db():
             milestone_40 INTEGER DEFAULT 0,
             milestone_90 INTEGER DEFAULT 0,
             milestone_365 INTEGER DEFAULT 0,
-            current_zikr TEXT DEFAULT 'Субханаллах',
+            current_zikr TEXT DEFAULT 'Субханаллях',
             last_active TEXT
         )
     """
@@ -223,10 +247,13 @@ async def process_terms(callback: types.CallbackQuery, state: FSMContext):
     conn.commit()
     conn.close()
 
-    await callback.message.edit_text(
-        "Благодарим за доверие! 🤍\n\n🌍 Напишите название вашего города на любом языке (например, *Нерюнгри*, *London*, *Дубай*, *Istanbul*), чтобы мы рассчитывали расписание намазов.",
-        parse_mode="Markdown",
-    )
+    try:
+        await callback.message.edit_text(
+            "Благодарим за доверие! 🤍\n\n🌍 Напишите название вашего города на любом языке (например, *Нерюнгри*, *London*, *Дубай*, *Istanbul*), чтобы мы рассчитывали расписание намазов.",
+            parse_mode="Markdown",
+        )
+    except TelegramBadRequest:
+        pass
     await state.set_state(OnboardingState.waiting_for_city)
 
 
@@ -271,17 +298,21 @@ async def process_mode_selection(
 
     await state.clear()
 
-    await callback.message.edit_text(
-        f"✅ Режим установлен: **{mode_code.upper()}**\n📍 Локация: **{city}**\n\nГлавное меню готово 👇",
-        parse_mode="Markdown",
-    )
+    try:
+        await callback.message.edit_text(
+            f"✅ Режим установлен: **{mode_code.upper()}**\n📍 Локация: **{city}**\n\nГлавное меню готово 👇",
+            parse_mode="Markdown",
+        )
+    except TelegramBadRequest:
+        pass
+
     await callback.message.answer(
         "Выберите раздел:", reply_markup=get_main_menu_keyboard()
     )
 
 
 # ==================== ШАГ ДНЯ (Ближайший намаз) ====================
-@router.message(F.text == "✨ Шаг дня")
+@router.message(F.text.contains("Шаг дня"))
 async def menu_daily_step(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
@@ -291,7 +322,8 @@ async def menu_daily_step(message: types.Message):
     city = row[0] if row and row[0] else "Нерюнгри"
     conn.close()
 
-    encoded_city = urllib.parse.quote(city)
+    api_city = transliterate_city(city)
+    encoded_city = urllib.parse.quote(api_city)
     api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
     
     async with aiohttp.ClientSession() as session:
@@ -355,11 +387,10 @@ async def complete_dynamic_step(callback: types.CallbackQuery):
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Увеличиваем общий стрик и проверяем вехи
     cursor.execute("SELECT streak, milestone_40, milestone_90, milestone_365 FROM users WHERE user_id = ?", (user_id,))
     u_row = cursor.fetchone()
     if u_row:
-        streak, m40, m90, m365 = u_row[0], u_row[1], u_row[2], u_row[3]
+        streak = u_row[0]
         new_streak = streak + 1
         cursor.execute("UPDATE users SET streak = ? WHERE user_id = ?", (new_streak, user_id))
         conn.commit()
@@ -373,7 +404,7 @@ async def complete_dynamic_step(callback: types.CallbackQuery):
     )
     try:
         await callback.message.edit_text(completion_text, parse_mode="Markdown")
-    except Exception:
+    except TelegramBadRequest:
         pass
     await callback.answer("Шаг успешно засчитан!")
 
@@ -402,7 +433,7 @@ def get_tasbih_keyboard():
     )
 
 
-@router.message(F.text == "📿 Электронный Тасбих")
+@router.message(F.text.contains("Тасбих"))
 async def menu_tasbih(message: types.Message):
     user_id = message.from_user.id
     today = datetime.now().strftime("%Y-%m-%d")
@@ -497,7 +528,7 @@ async def tasbih_increment(callback: types.CallbackQuery):
 
     try:
         await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
-    except Exception:
+    except TelegramBadRequest:
         pass
     await callback.answer(notification_msg)
 
@@ -526,7 +557,10 @@ async def tasbih_reset(callback: types.CallbackQuery):
         f"✨ **{active_zikr['name']}** ({active_zikr['arabic']})\n\n"
         f"📊 Счёт: **0 / {active_zikr['target']}**"
     )
-    await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
+    try:
+        await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
+    except TelegramBadRequest:
+        pass
     await callback.answer("Счетчик сброшен.")
 
 
@@ -561,12 +595,15 @@ async def tasbih_change(callback: types.CallbackQuery):
         f"✨ **{next_zikr['name']}** ({next_zikr['arabic']})\n\n"
         f"📊 Счёт: **{count} / {target}**"
     )
-    await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
+    try:
+        await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
+    except TelegramBadRequest:
+        pass
     await callback.answer(f"Зикр: {next_zikr['name']}")
 
 
 # ==================== ВРЕМЯ НАМАЗА ====================
-@router.message(F.text == "⏰ Время намаза")
+@router.message(F.text.contains("Время намаза"))
 async def menu_prayer_times(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
@@ -576,7 +613,8 @@ async def menu_prayer_times(message: types.Message):
     city = row[0] if row and row[0] else "Нерюнгри"
     conn.close()
 
-    encoded_city = urllib.parse.quote(city)
+    api_city = transliterate_city(city)
+    encoded_city = urllib.parse.quote(api_city)
     api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
     
     async with aiohttp.ClientSession() as session:
@@ -600,7 +638,7 @@ async def menu_prayer_times(message: types.Message):
 
 
 # ==================== АЗКАРЫ И ПРОГРЕСС ====================
-@router.message(F.text == "🌅 Утренние и вечерние азкары")
+@router.message(F.text.contains("азкары"))
 async def menu_adhkar(message: types.Message):
     text = (
         "🌅 **Утренние и вечерние азкары**\n\n"
@@ -610,7 +648,7 @@ async def menu_adhkar(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 
-@router.message(F.text == "📊 Мой прогресс")
+@router.message(F.text.contains("Мой прогресс"))
 async def menu_progress(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
@@ -623,12 +661,12 @@ async def menu_progress(message: types.Message):
     progress_text = (
         f"📊 **Ваш прогресс**\n\n"
         f"🔥 Текущая серия (стрик): **{streak} дн.**\n"
-        f"🏆 Вехи постоянства (40 / 90 / 365): Активны!"
+        f"🏆 Вехи постоянства (40 / 90 / 365): Активны и сохраняются навсегда!"
     )
     await message.answer(progress_text, parse_mode="Markdown")
 
 
-@router.message(F.text == "⚙️ Настройки и Режимы")
+@router.message(F.text.contains("Настройки"))
 async def menu_settings(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
@@ -668,7 +706,8 @@ async def prayer_notification_loop():
                 if not city:
                     city = "Нерюнгри"
                 
-                encoded_city = urllib.parse.quote(city)
+                api_city = transliterate_city(city)
+                encoded_city = urllib.parse.quote(api_city)
                 api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
                 
                 try:
@@ -719,7 +758,7 @@ async def prayer_notification_loop():
                                                 logger.error(f"Error sending 5_min: {e}")
                                         conn.close()
 
-                                    # 2. Догоняющее напоминание через 15 минут после начала намаза (если не отмечено)
+                                    # 2. Догоняющее напоминание через 10-15 минут после начала намаза
                                     catch_up_dt = p_dt + timedelta(minutes=15)
                                     if current_time_str == catch_up_dt.strftime("%H:%M"):
                                         conn = get_db_connection()
@@ -752,7 +791,7 @@ async def prayer_notification_loop():
                                                 logger.error(f"Error sending catch_up: {e}")
                                         conn.close()
 
-                                    # 3. Вечерний итог после Иша (+1 час после Иша)
+                                    # 3. Вечерний итог после Иша (+1 час после Иша) — короткий и емкий
                                     if p_name == "Иша":
                                         isha_end_dt = p_dt + timedelta(hours=1)
                                         if current_time_str == isha_end_dt.strftime("%H:%M"):
@@ -764,7 +803,7 @@ async def prayer_notification_loop():
                                             )
                                             if not cursor.fetchone():
                                                 evening_text = (
-                                                    "🌙 **День подошел к концу, и все предписанное выполнено перед Всевышним. Спокойной ночи!** ✨"
+                                                    "🌙 **День подошел к концу, и все предписанное выполнено перед Всевышним. Вы сделали всё, что планировали. Спокойной ночи!** ✨"
                                                 )
                                                 try:
                                                     await bot.send_message(user_id, evening_text, parse_mode="Markdown")
