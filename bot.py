@@ -37,7 +37,7 @@ dp.include_router(router)
 
 DB_NAME = "amal365.db"
 
-# ==================== КЭШ И ТОЧНЫЙ ГЕОКОДИНГ С ЧАСОВЫМ ПОЯСОМ ====================
+# ==================== УМНЫЙ ГЕОКОДИНГ И КЭШ ====================
 TIMINGS_CACHE = {}
 
 def translit_city(text: str) -> str:
@@ -79,7 +79,6 @@ async def get_timings_data(city: str):
     
     lat_city = translit_city(city)
     async with aiohttp.ClientSession() as session:
-        # Уровень 1: Поиск по городу со страной
         try:
             url_1 = f"http://api.aladhan.com/v1/timingsByCity?city={urllib.parse.quote(lat_city)}&country=Russia&method=2"
             async with session.get(url_1, timeout=5) as resp:
@@ -95,7 +94,6 @@ async def get_timings_data(city: str):
         except Exception as e:
             logger.error(f"Level 1 timing error: {e}")
 
-        # Уровень 2: Поиск по адресу (универсальный геокодинг)
         try:
             url_2 = f"http://api.aladhan.com/v1/timingsByAddress?address={urllib.parse.quote(city)}&method=2"
             async with session.get(url_2, timeout=5) as resp:
@@ -189,8 +187,9 @@ def get_db_connection():
     return sqlite3.connect(DB_NAME)
 
 
-# ==================== БАЗА ХАДИСОВ ====================
+# ==================== БАЗА ХАДИСОВ (Включая Тахаджуд) ====================
 PRAYER_HADITHS = {
+    "Тахаджуд": "«Самый лучший намаз после обязательных — это ночной намаз (Тахаджуд)». (Муслим)",
     "Фаджр": "«Два ракаата утреннего намаза (Фаджр) лучше этого мира и всего, что в нем». (Муслим)",
     "Зухр": "«Тот, кто совершает четыре ракаата до и четыре после полуденного намаза (Зухр), тому Аллах запретит Огонь». (Ат-Тирмизи)",
     "Аср": "«Тот, кто совершит намаз утренний (Фаджр) и предзакатный (Аср), войдет в Рай». (Аль-Бухари)",
@@ -364,7 +363,7 @@ async def process_mode_selection(callback: types.CallbackQuery, state: FSMContex
     await callback.message.answer("Выберите нужный раздел в меню:", reply_markup=get_main_menu_keyboard())
 
 
-# ==================== ШАГ ДНЯ (С точным расчетом по часовому поясу) ====================
+# ==================== ШАГ ДНЯ (С учетом Тахаджуда) ====================
 @router.message(F.text == "✨ Шаг дня")
 async def menu_daily_step(message: types.Message):
     user_id = message.from_user.id
@@ -382,6 +381,7 @@ async def menu_daily_step(message: types.Message):
         tz_str = res["timezone"]
         
         prayers = {
+            "Тахаджуд": timings.get('Lastthird'),
             "Фаджр": timings.get('Fajr'),
             "Зухр": timings.get('Dhuhr'),
             "Аср": timings.get('Asr'),
@@ -401,12 +401,12 @@ async def menu_daily_step(message: types.Message):
                 break
         
         if not next_prayer_name:
-            next_prayer_name = "Фаджр [Завтра]"
-            next_prayer_time = prayers.get('Fajr')
+            next_prayer_name = "Тахаджуд [Завтра]"
+            next_prayer_time = prayers.get('Lastthird')
         
         step_text = (
             f"✨ **Шаг дня ({city})**\n\n"
-            f"🎯 **Ближайший намаз:**\n"
+            f"🎯 **Ближайший шаг / намаз:**\n"
             f"• **{next_prayer_name}** в **{next_prayer_time}**\n\n"
             f"📚 *«Поистине, намаз предписан верующим в определенное время»* (Сура Ан-Ниса, 103).\n\n"
             f"🏃‍♂️ *Сильный и здоровый верующий любимее Аллаха, чем слабый. Не забывайте про физическую активность (шаги, спорт)!*\n\n"
@@ -664,7 +664,7 @@ async def tasbih_change(callback: types.CallbackQuery):
     await callback.answer(f"Зикр: {next_zikr['name']}")
 
 
-# ==================== ВРЕМЯ НАМАЗА ====================
+# ==================== ВРЕМЯ НАМАЗА (Включая Тахаджуд) ====================
 @router.message(F.text == "⏰ Время намаза")
 async def menu_prayer_times(message: types.Message):
     user_id = message.from_user.id
@@ -681,6 +681,7 @@ async def menu_prayer_times(message: types.Message):
         timings = res["timings"]
         prayer_text = (
             f"🕌 **Расписание намазов — {city}**\n\n"
+            f"🌌 Тахаджуд (Последняя треть): {timings.get('Lastthird')}\n"
             f"🌅 Фаджр: {timings.get('Fajr')}\n"
             f"☀️ Восход: {timings.get('Sunrise')}\n"
             f"🏙 Зухр: {timings.get('Dhuhr')}\n"
@@ -853,6 +854,7 @@ async def prayer_notification_loop():
                 current_time_str = local_now.strftime("%H:%M")
                 
                 prayers = {
+                    "Тахаджуд": timings.get('Lastthird'),
                     "Фаджр": timings.get('Fajr'),
                     "Зухр": timings.get('Dhuhr'),
                     "Аср": timings.get('Asr'),
@@ -951,7 +953,7 @@ async def start_web_server():
 # ==================== ЗАПУСК ====================
 async def main():
     init_db()
-    logger.info("Bot «Амаль 365» fully re-initialized with Timezone support.")
+    logger.info("Bot «Амаль 365» fully re-initialized with Tahajjud support.")
     
     await asyncio.gather(
         start_web_server(),
