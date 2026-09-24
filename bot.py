@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sqlite3
 from datetime import datetime, timedelta
 import aiohttp
@@ -21,7 +22,8 @@ from aiogram.types import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-API_TOKEN = "YOUR_BOT_TOKEN_HERE"  # Замените на токен вашего бота от @BotFather
+# Безопасное чтение токена из переменных окружения Render
+API_TOKEN = os.getenv("BOT_TOKEN")
 
 # Инициализация бота и диспетчера
 bot = Bot(token=API_TOKEN)
