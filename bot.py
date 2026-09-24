@@ -19,7 +19,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-# Настройка логирования уровня Enterprise
+# Настройка логирования
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO
@@ -36,37 +36,91 @@ dp.include_router(router)
 
 DB_NAME = "amal365.db"
 
-# ==================== КЭШ РАСПИСАНИЯ (Enterprise Optimization) ====================
+# ==================== УМНАЯ ТРАНСЛИТЕРАЦИЯ И КЭШ РАСПИСАНИЯ ====================
 TIMINGS_CACHE = {}
 
+def translit_city(text: str) -> str:
+    mapping = {
+        'нерюнгри': 'Neryungri',
+        'москва': 'Moscow',
+        'санкт-петербург': 'Saint Petersburg',
+        'казань': 'Kazan',
+        'новосибирск': 'Novosibirsk',
+        'екатеринбург': 'Yekaterinburg',
+        'уфа': 'Ufa',
+        'грозный': 'Grozny',
+        'махачкала': 'Makhachkala',
+        'якутск': 'Yakutsk',
+        'алматы': 'Almaty',
+        'ташкент': 'Tashkent',
+        'бишкек': 'Bishkek',
+        'дубай': 'Dubai',
+        'стамбул': 'Istanbul'
+    }
+    text_lower = text.lower().strip()
+    if text_lower in mapping:
+        return mapping[text_lower]
+    
+    cyr_to_lat = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e', 'ж': 'zh',
+        'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o',
+        'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'ts',
+        'ч': 'ch', 'ш': 'sh', 'щ': 'shch', 'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
+    }
+    return ''.join(cyr_to_lat.get(char, char) for char in text_lower).capitalize()
+
 async def get_timings(city: str):
-    """
-    Получение расписания через интеллектуальный эндпоинт timingsByAddress 
-    с поддержкой геокодинга на любом языке (кириллица, регионы, мегаполисы) и кэшированием.
-    """
     today = datetime.now().strftime("%Y-%m-%d")
     cache_key = (city.lower().strip(), today)
     
     if cache_key in TIMINGS_CACHE:
         return TIMINGS_CACHE[cache_key]
     
-    encoded_address = urllib.parse.quote(city)
-    api_url = f"http://api.aladhan.com/v1/timingsByAddress?address={encoded_address}&method=2"
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(api_url, timeout=10) as resp:
+    lat_city = translit_city(city)
+    async with aiohttp.ClientSession() as session:
+        # Уровень 1: Поиск по городу с указанием страны (самый надежный для СНГ)
+        try:
+            url_1 = f"http://api.aladhan.com/v1/timingsByCity?city={urllib.parse.quote(lat_city)}&country=Russia&method=2"
+            async with session.get(url_1, timeout=5) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    timings = data["data"]["timings"]
-                    TIMINGS_CACHE[cache_key] = timings
-                    return timings
-    except Exception as e:
-        logger.error(f"Ошибка геокодинга для города {city}: {e}")
+                    if data.get("code") == 200:
+                        timings = data["data"]["timings"]
+                        TIMINGS_CACHE[cache_key] = timings
+                        return timings
+        except Exception as e:
+            logger.error(f"Level 1 timing error: {e}")
+
+        # Уровень 2: Поиск по городу без страны
+        try:
+            url_2 = f"http://api.aladhan.com/v1/timingsByCity?city={urllib.parse.quote(lat_city)}&method=2"
+            async with session.get(url_2, timeout=5) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("code") == 200:
+                        timings = data["data"]["timings"]
+                        TIMINGS_CACHE[cache_key] = timings
+                        return timings
+        except Exception as e:
+            logger.error(f"Level 2 timing error: {e}")
+
+        # Уровень 3: Резервный поиск по адресу
+        try:
+            url_3 = f"http://api.aladhan.com/v1/timingsByAddress?address={urllib.parse.quote(city)}&method=2"
+            async with session.get(url_3, timeout=5) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data.get("code") == 200:
+                        timings = data["data"]["timings"]
+                        TIMINGS_CACHE[cache_key] = timings
+                        return timings
+        except Exception as e:
+            logger.error(f"Level 3 timing error: {e}")
+
     return None
 
 
-# ==================== БАЗА ДАННЫХ И МИГРАЦИИ ====================
+# ==================== БАЗА ДАННЫХ ====================
 def init_db():
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
@@ -135,7 +189,7 @@ def get_db_connection():
     return sqlite3.connect(DB_NAME)
 
 
-# ==================== БАЗА СПЕЦИАЛИЗИРОВАННЫХ ХАДИСОВ ====================
+# ==================== БАЗА ХАДИСОВ ====================
 PRAYER_HADITHS = {
     "Фаджр": "«Два ракаата утреннего намаза (Фаджр) лучше этого мира и всего, что в нем». (Муслим)",
     "Зухр": "«Тот, кто совершает четыре ракаата до и четыре после полуденного намаза (Зухр), тому Аллах запретит Огонь». (Ат-Тирмизи)",
@@ -231,7 +285,7 @@ async def process_terms(callback: types.CallbackQuery, state: FSMContext):
     conn.close()
 
     await callback.message.edit_text(
-        "Благодарим за доверие! 🤍\n\n🌍 Напишите название вашего города, региона или села на любом языке (например, *Нерюнгри*, *Республика Саха*, *Москва*, *Dubai*), чтобы система точно определила координаты и расписание намазов.",
+        "Благодарим за доверие! 🤍\n\n🌍 Напишите название вашего города или региона (например, *Нерюнгри*, *Москва*, *Казань*), чтобы система точно определила расписание намазов.",
         parse_mode="Markdown",
     )
     await state.set_state(OnboardingState.waiting_for_city)
@@ -240,10 +294,8 @@ async def process_terms(callback: types.CallbackQuery, state: FSMContext):
 @router.message(OnboardingState.waiting_for_city)
 async def process_city(message: types.Message, state: FSMContext):
     city_name = message.text.strip()
-    
-    # FSM Guard: защита от отправки системных команд или кнопок меню во время ввода
     if city_name.startswith("/") or city_name in ["✨ Шаг дня", "📿 Электронный Тасбих", "⏰ Время намаза", "📊 Мой прогресс", "🌅 Утренние и вечерние азкары", "⚙️ Настройки и Режимы"]:
-        await message.answer("Пожалуйста, введите название вашего населенного пункта или региона текстом (например: *Нерюнгри*).")
+        await message.answer("Пожалуйста, введите название вашего населенного пункта текстом (например: *Нерюнгри*).")
         return
 
     user_id = message.from_user.id
@@ -265,7 +317,7 @@ async def process_city(message: types.Message, state: FSMContext):
 async def process_city_change(message: types.Message, state: FSMContext):
     city_name = message.text.strip()
     if city_name.startswith("/"):
-        await message.answer("Введите корректное название города или региона текстом.")
+        await message.answer("Введите корректное название города текстом.")
         return
 
     user_id = message.from_user.id
@@ -312,7 +364,7 @@ async def process_mode_selection(callback: types.CallbackQuery, state: FSMContex
     await callback.message.answer("Выберите нужный раздел в меню:", reply_markup=get_main_menu_keyboard())
 
 
-# ==================== ШАГ ДНЯ (Духовный + Физическое здоровье) ====================
+# ==================== ШАГ ДНЯ (Духовный + Здоровье) ====================
 @router.message(F.text == "✨ Шаг дня")
 async def menu_daily_step(message: types.Message):
     user_id = message.from_user.id
@@ -349,11 +401,11 @@ async def menu_daily_step(message: types.Message):
             next_prayer_time = prayers.get('Fajr')
         
         step_text = (
-            f"✨ **Ваш духовный и телесный Шаг дня ({city})**\n\n"
+            f"✨ **Шаг дня ({city})**\n\n"
             f"🎯 **Ближайший намаз:**\n"
             f"• **{next_prayer_name}** в **{next_prayer_time}**\n\n"
             f"📚 *«Поистине, намаз предписан верующим в определенное время»* (Сура Ан-Ниса, 103).\n\n"
-            f"🏃‍♂️ *Сильный и здоровый верующий любимее Аллаха, чем слабый. Уделите внимание и физической активности (прогулка, шаги, спорт)!*\n\n"
+            f"🏃‍♂️ *Сильный и здоровый верующий любимее Аллаха, чем слабый. Не забывайте про физическую активность (шаги, спорт)!*\n\n"
             f"Выберите действие ниже:"
         )
     else:
@@ -404,7 +456,6 @@ async def complete_health_step(callback: types.CallbackQuery):
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    # Проверяем, отмечал ли уже активность сегодня
     cursor.execute("SELECT 1 FROM completed_health WHERE user_id = ? AND date = ?", (user_id, today))
     already_done = cursor.fetchone()
 
@@ -421,13 +472,13 @@ async def complete_health_step(callback: types.CallbackQuery):
         f"{callback.message.text}\n\n"
         f"**💪 АКТИВНОСТЬ ЗАСЧИТАНА! Баракаллаху фикум.** ✨\n\n"
         f"🌿 *«Сильный верующий лучше и любимее перед Аллахом, чем верующий слабый, хотя в каждом из них есть благо»* (Муслим).\n\n"
-        f"Забота о теле — это тоже проявление благодарности Всевышнему за дар жизни!"
+        f"Забота о теле — это проявление благодарности Всевышнему!"
     )
     try:
         await callback.message.edit_text(msg, parse_mode="Markdown")
     except Exception:
         pass
-    await callback.answer("Физическая активность успешно сохранена!")
+    await callback.answer("Активность успешно сохранена!")
 
 
 # ==================== ЭЛЕКТРОННЫЙ ТАСБИХ (33 / 99 / ♾️) ====================
@@ -638,33 +689,78 @@ async def menu_prayer_times(message: types.Message):
     await message.answer(prayer_text, parse_mode="Markdown")
 
 
-# ==================== ИНТЕЛЛЕКТУАЛЬНЫЕ АЗКАРЫ ПО ВРЕМЕНИ ====================
+# ==================== АЗКАРЫ (РАЗДЕЛЬНОЕ МЕНЮ) ====================
 @router.message(F.text == "🌅 Утренние и вечерние азкары")
 async def menu_adhkar(message: types.Message):
-    current_hour = datetime.now().hour
-    
-    # До 16:00 выдаем утренние, после 16:00 — вечерние
-    if current_hour < 16:
-        text = (
-            "🌅 **Утренние азкары (Защита и Поминание)**\n\n"
-            "• Рекомендовано читать после утреннего намаза (Фаджр).\n\n"
-            "🛡 **Основа защиты:**\n"
-            "1. Аят аль-Курси (Сура «Аль-Бакара», 255).\n"
-            "2. Суры «Аль-Ихляс», «Аль-Фаляк», «Ан-Нас» (по 3 раза).\n"
-            "3. *«Аллахумма бика асбахна ва бика амсайна, ва бика нахья ва бика намуту ва иляйка ан-нушур»*\n\n"
-            "🕊 Пусть этот день начнется с благословения и защиты Всевышнего."
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="☀️ Утренние азкары", callback_data="adhkar_morning")],
+            [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="adhkar_evening")]
+        ]
+    )
+    await message.answer(
+        "🌅 **Утренние и вечерние азкары**\n\nВыберите нужный раздел для чтения защиты и поминания:",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+@router.callback_query(F.data == "adhkar_morning")
+async def show_morning_adhkar(callback: types.CallbackQuery):
+    text = (
+        "🌅 **Утренние азкары (Защита и Поминание)**\n\n"
+        "• Рекомендовано читать после утреннего намаза (Фаджр).\n\n"
+        "🛡 **Основа защиты:**\n"
+        "1. Аят аль-Курси (Сура «Аль-Бакара», 255).\n"
+        "2. Суры «Аль-Ихляс», «Аль-Фаляк», «Ан-Нас» (по 3 раза).\n"
+        "3. *«Аллахумма бика асбахна ва бика амсайна, ва бика нахья ва бика намуту ва иляйка ан-нушур»*\n\n"
+        "🕊 Пусть этот день начнется с благословения и защиты Всевышнего."
+    )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к выбору азкаров", callback_data="back_to_adhkar")]]
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer()
+
+@router.callback_query(F.data == "adhkar_evening")
+async def show_evening_adhkar(callback: types.CallbackQuery):
+    text = (
+        "🌙 **Вечерние азкары (Защита и Покой)**\n\n"
+        "• Рекомендовано читать после закатного намаза (Магриб).\n\n"
+        "🛡 **Основа защиты:**\n"
+        "1. Аят аль-Курси (Сура «Аль-Бакара», 255).\n"
+        "2. Суры «Аль-Ихляс», «Аль-Фаляк», «Ан-Нас» (по 3 раза).\n"
+        "3. *«Аллахумма бика амсайна ва бика асбахна, ва бика нахья ва бика намуту ва иляйка аль-масир»*\n\n"
+        "🕊 Пусть вечер принесет умиротворение вашему сердцу."
+    )
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="🔙 Назад к выбору азкаров", callback_data="back_to_adhkar")]]
+    )
+    try:
+        await callback.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer()
+
+@router.callback_query(F.data == "back_to_adhkar")
+async def back_to_adhkar(callback: types.CallbackQuery):
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="☀️ Утренние азкары", callback_data="adhkar_morning")],
+            [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="adhkar_evening")]
+        ]
+    )
+    try:
+        await callback.message.edit_text(
+            "🌅 **Утренние и вечерние азкары**\n\nВыберите нужный раздел для чтения защиты и поминания:",
+            reply_markup=keyboard,
+            parse_mode="Markdown"
         )
-    else:
-        text = (
-            "🌙 **Вечерние азкары (Защита и Покой)**\n\n"
-            "• Рекомендовано читать после закатного намаза (Магриб).\n\n"
-            "🛡 **Основа защиты:**\n"
-            "1. Аят аль-Курси (Сура «Аль-Бакара», 255).\n"
-            "2. Суры «Аль-Ихляс», «Аль-Фаляк», «Ан-Нас» (по 3 раза).\n"
-            "3. *«Аллахумма бика амсайна ва бика асбахна, ва бика нахья ва бика намуту ва иляйка аль-масир»*\n\n"
-            "🕊 Пусть вечер принесет умиротворение вашему сердцу."
-        )
-    await message.answer(text, parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer()
 
 
 # ==================== ПРОГРЕСС И НАСТРОЙКИ ====================
@@ -721,7 +817,7 @@ async def menu_settings(message: types.Message):
 
 @router.callback_query(F.data == "change_city_btn")
 async def callback_change_city(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("🌍 Введите новое название вашего города или региона (например: *Нерюнгри*, *Республика Саха*, *Москва*):", parse_mode="Markdown")
+    await callback.message.answer("🌍 Введите новое название вашего города или региона (например: *Нерюнгри*, *Москва*, *Республика Саха*):", parse_mode="Markdown")
     await state.set_state(OnboardingState.changing_city)
     await callback.answer()
 
@@ -763,7 +859,7 @@ async def prayer_notification_loop():
                     
                     p_dt = datetime.strptime(f"{current_date} {p_time}", "%Y-%m-%d %H:%M")
                     
-                    # 1. За 5 минут до намаза (специфичный хадис)
+                    # 1. За 5 минут до намаза
                     notify_5_dt = p_dt - timedelta(minutes=5)
                     if current_time_str == notify_5_dt.strftime("%H:%M"):
                         conn = get_db_connection()
@@ -784,7 +880,7 @@ async def prayer_notification_loop():
                                 logger.error(f"Error sending 5_min: {e}")
                         conn.close()
 
-                    # 2. Догоняющее напоминание через 15 минут после начала намаза
+                    # 2. Догоняющее напоминание через 15 минут
                     catch_up_dt = p_dt + timedelta(minutes=15)
                     if current_time_str == catch_up_dt.strftime("%H:%M"):
                         conn = get_db_connection()
@@ -848,7 +944,7 @@ async def start_web_server():
 # ==================== ЗАПУСК ====================
 async def main():
     init_db()
-    logger.info("Bot «Амаль 365» fully re-initialized with Enterprise Architecture.")
+    logger.info("Bot «Амаль 365» fully re-initialized.")
     
     await asyncio.gather(
         start_web_server(),
