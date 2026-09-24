@@ -69,7 +69,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             city TEXT DEFAULT 'Нерюнгри',
-            mode TEXT DEFAULT 'alfard',
+            mode TEXT DEFAULT 'Аль-Фард',
             consent INTEGER DEFAULT 0,
             streak INTEGER DEFAULT 0,
             milestone_40 INTEGER DEFAULT 0,
@@ -214,7 +214,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     if not row or row[0] == 0:
         terms_text = (
-            "🌿 **Добро пожаловать в «Амаль 365»!**\n\n"
+            "🌿 **Ассаляму алейкум
+            Добро пожаловать в «Амаль 365»!**\n\n"
             "Прежде чем начать наш благословенный путь, пожалуйста, подтвердите согласие на сохранение персонального прогресса. Ваши данные надежно защищены."
         )
         keyboard = InlineKeyboardMarkup(
