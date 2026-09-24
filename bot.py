@@ -18,7 +18,6 @@ from aiogram.types import (
     KeyboardButton,
     ReplyKeyboardMarkup,
 )
-from aiogram.exceptions import TelegramBadRequest
 
 # Настройка логирования уровня Enterprise
 logging.basicConfig(
@@ -37,27 +36,33 @@ dp.include_router(router)
 
 DB_NAME = "amal365.db"
 
-# ==================== ТРАНСЛИТЕРАЦИЯ ГОРОДОВ ДЛЯ API ====================
-def transliterate_city(city_name: str) -> str:
-    translit_map = {
+# ==================== УМНАЯ ТРАНСЛИТЕРАЦИЯ ГОРОДОВ ДЛЯ API ====================
+def translit_city(text: str) -> str:
+    mapping = {
         'нерюнгри': 'Neryungri',
         'москва': 'Moscow',
         'санкт-петербург': 'Saint Petersburg',
         'казань': 'Kazan',
+        'новосибирск': 'Novosibirsk',
+        'екатеринбург': 'Yekaterinburg',
         'уфа': 'Ufa',
         'грозный': 'Grozny',
         'махачкала': 'Makhachkala',
         'алматы': 'Almaty',
-        'астана': 'Astana',
         'ташкент': 'Tashkent',
-        'бишкек': 'Bishkek',
-        'баку': 'Baku',
-        'дубай': 'Dubai',
-        'стамбул': 'Istanbul',
-        'лондон': 'London'
+        'бишкек': 'Bishkek'
     }
-    cleaned = city_name.strip().lower()
-    return translit_map.get(cleaned, city_name.strip())
+    text_lower = text.lower().strip()
+    if text_lower in mapping:
+        return mapping[text_lower]
+    
+    cyr_to_lat = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e', 'ж': 'zh',
+        'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o',
+        'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'ts',
+        'ч': 'ch', 'ш': 'sh', 'щ': 'shch', 'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
+    }
+    return ''.join(cyr_to_lat.get(char, char) for char in text_lower).capitalize()
 
 
 # ==================== БАЗА ДАННЫХ И МИГРАЦИИ ====================
@@ -72,10 +77,8 @@ def init_db():
             mode TEXT DEFAULT 'Аль-Фард',
             consent INTEGER DEFAULT 0,
             streak INTEGER DEFAULT 0,
-            milestone_40 INTEGER DEFAULT 0,
-            milestone_90 INTEGER DEFAULT 0,
-            milestone_365 INTEGER DEFAULT 0,
-            current_zikr TEXT DEFAULT 'Субханаллях',
+            current_zikr TEXT DEFAULT 'Субханаллах',
+            tasbih_target INTEGER DEFAULT 33,
             last_active TEXT
         )
     """
@@ -148,6 +151,7 @@ HADITHS_365 = [
 class OnboardingState(StatesGroup):
     waiting_for_city = State()
     waiting_for_mode = State()
+    changing_city = State()
 
 
 # ==================== КЛАВИАТУРЫ ====================
@@ -214,9 +218,8 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     if not row or row[0] == 0:
         terms_text = (
-            "🌿 **Ассаляму алейкум
-            Добро пожаловать в «Амаль 365»!**\n\n"
-            "Прежде чем начать наш благословенный путь, пожалуйста, подтвердите согласие на сохранение персонального прогресса. Ваши данные надежно защищены."
+            "🌿 **Добро пожаловать в духовный компаньон «Амаль 365»!**\n\n"
+            "Прежде чем начать наш благословенный путь, пожалуйста, подтвердите согласие на сохранение личного прогресса. Ваши данные в абсолютной безопасности."
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
@@ -248,19 +251,22 @@ async def process_terms(callback: types.CallbackQuery, state: FSMContext):
     conn.commit()
     conn.close()
 
-    try:
-        await callback.message.edit_text(
-            "Благодарим за доверие! 🤍\n\n🌍 Напишите название вашего города на любом языке (например, *Нерюнгри*, *London*, *Дубай*, *Istanbul*), чтобы мы рассчитывали расписание намазов.",
-            parse_mode="Markdown",
-        )
-    except TelegramBadRequest:
-        pass
+    await callback.message.edit_text(
+        "Благодарим за доверие! 🤍\n\n🌍 Напишите название вашего города или региона (например, *Нерюнгри*, *Москва*, *Казань*, *Dubai*), чтобы бот точно рассчитывал расписание намазов.",
+        parse_mode="Markdown",
+    )
     await state.set_state(OnboardingState.waiting_for_city)
 
 
 @router.message(OnboardingState.waiting_for_city)
 async def process_city(message: types.Message, state: FSMContext):
     city_name = message.text.strip()
+    
+    # Защита от случайного ввода команд или кнопок меню
+    if city_name.startswith("/") or city_name in ["✨ Шаг дня", "📿 Электронный Тасбих", "⏰ Время намаза", "📊 Мой прогресс", "🌅 Утренние и вечерние азкары", "⚙️ Настройки и Режимы"]:
+        await message.answer("Пожалуйста, введите название вашего населенного пункта текстом (например: *Нерюнгри* или *Москва*).")
+        return
+
     user_id = message.from_user.id
 
     conn = get_db_connection()
@@ -272,24 +278,51 @@ async def process_city(message: types.Message, state: FSMContext):
     conn.close()
 
     await message.answer(
-        f"Город **{city_name}** сохранен! 🏙\n\nВыберите ваш духовный режим поклонения:",
+        f"Город **{city_name}** успешно сохранен! 🏙\n\nВыберите ваш духовный режим поклонения:",
         reply_markup=get_modes_keyboard(),
         parse_mode="Markdown",
     )
     await state.set_state(OnboardingState.waiting_for_mode)
 
 
+# Изменение города из настроек
+@router.message(OnboardingState.changing_city)
+async def process_city_change(message: types.Message, state: FSMContext):
+    city_name = message.text.strip()
+    if city_name.startswith("/"):
+        await message.answer("Введите корректное название города текстом.")
+        return
+
+    user_id = message.from_user.id
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET city = ? WHERE user_id = ?", (city_name, user_id))
+    conn.commit()
+    conn.close()
+
+    await state.clear()
+    await message.answer(f"✅ Город/регион успешно изменен на: **{city_name}**", reply_markup=get_main_menu_keyboard(), parse_mode="Markdown")
+
+
+MODE_NAMES_MAP = {
+    "alfard": "Аль-Фард (Основа и Обязательство)",
+    "altihad": "Аль-Игтихад (Усердие и Стремление)",
+    "tazkiyah": "Ат-Тазкийя (Очищение души и Свет)",
+    "ihsan": "Аль-Ихсан (Совершенство и Искренность)"
+}
+
 @router.callback_query(F.data.startswith("set_mode_"))
 async def process_mode_selection(
     callback: types.CallbackQuery, state: FSMContext
 ):
     mode_code = callback.data.split("_")[2]
+    mode_rus = MODE_NAMES_MAP.get(mode_code, "Аль-Фард")
     user_id = callback.from_user.id
 
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "UPDATE users SET mode = ? WHERE user_id = ?", (mode_code, user_id)
+        "UPDATE users SET mode = ? WHERE user_id = ?", (mode_rus, user_id)
     )
     cursor.execute("SELECT city FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
@@ -301,19 +334,19 @@ async def process_mode_selection(
 
     try:
         await callback.message.edit_text(
-            f"✅ Режим установлен: **{mode_code.upper()}**\n📍 Локация: **{city}**\n\nГлавное меню готово 👇",
+            f"✅ Режим установлен: **{mode_rus}**\n📍 Локация: **{city}**\n\nГлавное меню готово 👇",
             parse_mode="Markdown",
         )
-    except TelegramBadRequest:
+    except Exception:
         pass
-
+        
     await callback.message.answer(
-        "Выберите раздел:", reply_markup=get_main_menu_keyboard()
+        "Выберите нужный раздел в меню:", reply_markup=get_main_menu_keyboard()
     )
 
 
 # ==================== ШАГ ДНЯ (Ближайший намаз) ====================
-@router.message(F.text.contains("Шаг дня"))
+@router.message(F.text == "✨ Шаг дня")
 async def menu_daily_step(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
@@ -323,10 +356,11 @@ async def menu_daily_step(message: types.Message):
     city = row[0] if row and row[0] else "Нерюнгри"
     conn.close()
 
-    api_city = transliterate_city(city)
-    encoded_city = urllib.parse.quote(api_city)
+    lat_city = translit_city(city)
+    encoded_city = urllib.parse.quote(lat_city)
     api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
     
+    step_text = ""
     async with aiohttp.ClientSession() as session:
         async with session.get(api_url) as resp:
             if resp.status == 200:
@@ -365,7 +399,7 @@ async def menu_daily_step(message: types.Message):
                     f"Нажмите кнопку после совершения молитвы:"
                 )
             else:
-                step_text = f"✨ **Шаг дня**\n\nНе удалось получить расписание для города *{city}*."
+                step_text = f"✨ **Шаг дня**\n\nНе удалось получить точное расписание для региона *{city}*. Пожалуйста, проверьте правильность названия в настройках."
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -382,16 +416,15 @@ async def menu_daily_step(message: types.Message):
 @router.callback_query(F.data == "complete_dynamic_step")
 async def complete_dynamic_step(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    today = datetime.now().strftime("%Y-%m-%d")
     day_of_year = datetime.now().timetuple().tm_yday
     hadith = HADITHS_365[day_of_year % len(HADITHS_365)]
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT streak, milestone_40, milestone_90, milestone_365 FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT streak FROM users WHERE user_id = ?", (user_id,))
     u_row = cursor.fetchone()
     if u_row:
-        streak = u_row[0]
+        streak = u_row[0] if u_row[0] is not None else 0
         new_streak = streak + 1
         cursor.execute("UPDATE users SET streak = ? WHERE user_id = ?", (new_streak, user_id))
         conn.commit()
@@ -401,24 +434,25 @@ async def complete_dynamic_step(callback: types.CallbackQuery):
         f"{callback.message.text}\n\n"
         f"**✅ ВЫПОЛНЕНО! Машааллах, баракаллаху фикум.** 🤍\n\n"
         f"📖 **Хадис дня:**\n{hadith}\n\n"
-        f"🎯 *Шаг зачтен. Продолжайте в том же духе!*"
+        f"🎯 *Шаг зачтен. Ваша серия растет!*"
     )
     try:
         await callback.message.edit_text(completion_text, parse_mode="Markdown")
-    except TelegramBadRequest:
+    except Exception:
         pass
     await callback.answer("Шаг успешно засчитан!")
 
 
-# ==================== ЭЛЕКТРОННЫЙ ТАСБИХ (Автопереключение) ====================
+# ==================== ЭЛЕКТРОННЫЙ ТАСБИХ (33 / 99 / ♾️) ====================
 ZIKRS_LIST = [
-    {"name": "Субханаллах", "arabic": "سُبْحَانَ اللَّهِ", "target": 33},
-    {"name": "Альхамдулиллях", "arabic": "الْحَمْدُ لِلَّهِ", "target": 33},
-    {"name": "Аллаху Акбар", "arabic": "اللَّهُ أَكْبَرُ", "target": 33},
-    {"name": "Астагфируллах", "arabic": "أَسْتَغْفِرُ اللَّهَ", "target": 100}
+    {"name": "Субханаллах", "arabic": "سُبْحَانَ اللَّهِ"},
+    {"name": "Альхамдулиллях", "arabic": "الْحَمْدُ لِلَّهِ"},
+    {"name": "Аллаху Акбар", "arabic": "اللَّهُ أَكْبَرُ"},
+    {"name": "Астагфируллах", "arabic": "أَسْتَغْفِرُ اللَّهَ"}
 ]
 
-def get_tasbih_keyboard():
+def get_tasbih_keyboard(target_val):
+    target_display = str(target_val) if target_val > 0 else "♾️"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -427,41 +461,45 @@ def get_tasbih_keyboard():
                 )
             ],
             [
+                InlineKeyboardButton(text=f"🎯 Цель: {target_display}", callback_data="tasbih_toggle_target"),
                 InlineKeyboardButton(text="🔄 Сброс", callback_data="tasbih_reset"),
-                InlineKeyboardButton(text="🔀 Другой зикр", callback_data="tasbih_change"),
+            ],
+            [
+                InlineKeyboardButton(text="🔀 Следующий зикр", callback_data="tasbih_change"),
             ],
         ]
     )
 
 
-@router.message(F.text.contains("Тасбих"))
+@router.message(F.text == "📿 Электронный Тасбих")
 async def menu_tasbih(message: types.Message):
     user_id = message.from_user.id
     today = datetime.now().strftime("%Y-%m-%d")
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT current_zikr FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT current_zikr, tasbih_target FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     current_zikr_name = row[0] if row and row[0] else "Субханаллах"
+    target = row[1] if row and row[1] is not None else 33
 
     active_zikr = next((z for z in ZIKRS_LIST if z["name"] == current_zikr_name), ZIKRS_LIST[0])
 
     cursor.execute(
-        "SELECT count, target FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
+        "SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
         (user_id, today, active_zikr["name"]),
     )
     t_row = cursor.fetchone()
     count = t_row[0] if t_row else 0
-    target = t_row[1] if t_row else active_zikr["target"]
     conn.close()
 
+    target_str = str(target) if target > 0 else "♾️"
     tasbih_text = (
         f"📿 **Электронный Тасбих**\n\n"
         f"✨ **{active_zikr['name']}** ({active_zikr['arabic']})\n\n"
-        f"📊 Счёт: **{count} / {target}**"
+        f"📊 Счёт: **{count} / {target_str}**"
     )
-    await message.answer(tasbih_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
+    await message.answer(tasbih_text, reply_markup=get_tasbih_keyboard(target), parse_mode="Markdown")
 
 
 @router.callback_query(F.data == "tasbih_inc")
@@ -471,46 +509,32 @@ async def tasbih_increment(callback: types.CallbackQuery):
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT current_zikr FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT current_zikr, tasbih_target FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     current_zikr_name = row[0] if row and row[0] else "Субханаллах"
+    target = row[1] if row and row[1] is not None else 33
 
     active_zikr = next((z for z in ZIKRS_LIST if z["name"] == current_zikr_name), ZIKRS_LIST[0])
 
     cursor.execute(
-        "SELECT count, target FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
+        "SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
         (user_id, today, active_zikr["name"]),
     )
     t_row = cursor.fetchone()
     current_count = t_row[0] if t_row else 0
-    target = t_row[1] if t_row else active_zikr["target"]
 
     new_count = current_count + 1
     notification_msg = f"+1 ({new_count})"
 
-    if new_count >= target:
+    # Если цель задана (например 33 или 99) и мы ее достигли
+    if target > 0 and new_count >= target:
         cursor.execute(
             "INSERT OR REPLACE INTO tasbih (user_id, date, zikr_name, count, target) VALUES (?, ?, ?, ?, ?)",
             (user_id, today, active_zikr["name"], target, target),
         )
-        
-        current_idx = next((i for i, z in enumerate(ZIKRS_LIST) if z["name"] == current_zikr_name), 0)
-        next_idx = (current_idx + 1) % len(ZIKRS_LIST)
-        next_zikr = ZIKRS_LIST[next_idx]
-
-        cursor.execute("UPDATE users SET current_zikr = ? WHERE user_id = ?", (next_zikr["name"], user_id))
         conn.commit()
-
-        cursor.execute(
-            "SELECT count, target FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
-            (user_id, today, next_zikr["name"]),
-        )
-        next_t_row = cursor.fetchone()
-        count = next_t_row[0] if next_t_row else 0
-        target = next_t_row[1] if next_t_row else next_zikr["target"]
-        active_zikr = next_zikr
-
-        notification_msg = f"🎉 Цель выполнена! Автопереход на: {active_zikr['name']}"
+        count = target
+        notification_msg = f"🎉 Цель {target} выполнена!"
     else:
         cursor.execute(
             "INSERT OR REPLACE INTO tasbih (user_id, date, zikr_name, count, target) VALUES (?, ?, ?, ?, ?)",
@@ -521,17 +545,60 @@ async def tasbih_increment(callback: types.CallbackQuery):
 
     conn.close()
 
+    target_str = str(target) if target > 0 else "♾️"
     updated_text = (
         f"📿 **Электронный Тасбих**\n\n"
         f"✨ **{active_zikr['name']}** ({active_zikr['arabic']})\n\n"
-        f"📊 Счёт: **{count} / {target}**"
+        f"📊 Счёт: **{count} / {target_str}**"
     )
 
     try:
-        await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
-    except TelegramBadRequest:
+        await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(target), parse_mode="Markdown")
+    except Exception:
         pass
     await callback.answer(notification_msg)
+
+
+@router.callback_query(F.data == "tasbih_toggle_target")
+async def tasbih_toggle_target(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT tasbih_target, current_zikr FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    current_target = row[0] if row and row[0] is not None else 33
+    current_zikr_name = row[1] if row and row[1] else "Субханаллах"
+
+    # Циклическое переключение целей: 33 -> 99 -> -1 (♾️) -> 33
+    if current_target == 33:
+        new_target = 99
+    elif current_target == 99:
+        new_target = -1
+    else:
+        new_target = 33
+
+    cursor.execute("UPDATE users SET tasbih_target = ? WHERE user_id = ?", (new_target, user_id))
+    conn.commit()
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    cursor.execute(
+        "SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
+        (user_id, today, current_zikr_name),
+    )
+    t_row = cursor.fetchone()
+    count = t_row[0] if t_row else 0
+    conn.close()
+
+    active_zikr = next((z for z in ZIKRS_LIST if z["name"] == current_zikr_name), ZIKRS_LIST[0])
+    target_str = str(new_target) if new_target > 0 else "♾️"
+
+    updated_text = (
+        f"📿 **Электронный Тасбих**\n\n"
+        f"✨ **{active_zikr['name']}** ({active_zikr['arabic']})\n\n"
+        f"📊 Счёт: **{count} / {target_str}**"
+    )
+    await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(new_target), parse_mode="Markdown")
+    await callback.answer(f"Цель изменена на: {target_str}")
 
 
 @router.callback_query(F.data == "tasbih_reset")
@@ -541,9 +608,10 @@ async def tasbih_reset(callback: types.CallbackQuery):
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT current_zikr FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT current_zikr, tasbih_target FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     current_zikr_name = row[0] if row and row[0] else "Субханаллах"
+    target = row[1] if row and row[1] is not None else 33
     active_zikr = next((z for z in ZIKRS_LIST if z["name"] == current_zikr_name), ZIKRS_LIST[0])
 
     cursor.execute(
@@ -553,16 +621,14 @@ async def tasbih_reset(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
 
+    target_str = str(target) if target > 0 else "♾️"
     updated_text = (
         f"📿 **Электронный Тасбих**\n\n"
         f"✨ **{active_zikr['name']}** ({active_zikr['arabic']})\n\n"
-        f"📊 Счёт: **0 / {active_zikr['target']}**"
+        f"📊 Счёт: **0 / {target_str}**"
     )
-    try:
-        await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
-    except TelegramBadRequest:
-        pass
-    await callback.answer("Счетчик сброшен.")
+    await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(target), parse_mode="Markdown")
+    await callback.answer("Счетчик обнулен.")
 
 
 @router.callback_query(F.data == "tasbih_change")
@@ -570,9 +636,10 @@ async def tasbih_change(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT current_zikr FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT current_zikr, tasbih_target FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     current_zikr_name = row[0] if row and row[0] else "Субханаллах"
+    target = row[1] if row and row[1] is not None else 33
 
     current_idx = next((i for i, z in enumerate(ZIKRS_LIST) if z["name"] == current_zikr_name), 0)
     next_idx = (current_idx + 1) % len(ZIKRS_LIST)
@@ -582,29 +649,26 @@ async def tasbih_change(callback: types.CallbackQuery):
     
     today = datetime.now().strftime("%Y-%m-%d")
     cursor.execute(
-        "SELECT count, target FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
+        "SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
         (user_id, today, next_zikr["name"]),
     )
     t_row = cursor.fetchone()
     count = t_row[0] if t_row else 0
-    target = t_row[1] if t_row else next_zikr["target"]
     conn.commit()
     conn.close()
 
+    target_str = str(target) if target > 0 else "♾️"
     updated_text = (
         f"📿 **Электронный Тасбих**\n\n"
         f"✨ **{next_zikr['name']}** ({next_zikr['arabic']})\n\n"
-        f"📊 Счёт: **{count} / {target}**"
+        f"📊 Счёт: **{count} / {target_str}**"
     )
-    try:
-        await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(), parse_mode="Markdown")
-    except TelegramBadRequest:
-        pass
+    await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(target), parse_mode="Markdown")
     await callback.answer(f"Зикр: {next_zikr['name']}")
 
 
 # ==================== ВРЕМЯ НАМАЗА ====================
-@router.message(F.text.contains("Время намаза"))
+@router.message(F.text == "⏰ Время намаза")
 async def menu_prayer_times(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
@@ -614,8 +678,8 @@ async def menu_prayer_times(message: types.Message):
     city = row[0] if row and row[0] else "Нерюнгри"
     conn.close()
 
-    api_city = transliterate_city(city)
-    encoded_city = urllib.parse.quote(api_city)
+    lat_city = translit_city(city)
+    encoded_city = urllib.parse.quote(lat_city)
     api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
     
     async with aiohttp.ClientSession() as session:
@@ -633,13 +697,13 @@ async def menu_prayer_times(message: types.Message):
                     f"🌙 Иша: {timings.get('Isha')}"
                 )
             else:
-                prayer_text = f"Не удалось получить расписание для города *{city}*."
+                prayer_text = f"Не удалось загрузить расписание для региона *{city}*. Пожалуйста, проверьте правильность названия в настройках."
 
     await message.answer(prayer_text, parse_mode="Markdown")
 
 
-# ==================== АЗКАРЫ И ПРОГРЕСС ====================
-@router.message(F.text.contains("азкары"))
+# ==================== АЗКАРЫ, ПРОГРЕСС И НАСТРОЙКИ ====================
+@router.message(F.text == "🌅 Утренние и вечерние азкары")
 async def menu_adhkar(message: types.Message):
     text = (
         "🌅 **Утренние и вечерние азкары**\n\n"
@@ -649,7 +713,7 @@ async def menu_adhkar(message: types.Message):
     await message.answer(text, parse_mode="Markdown")
 
 
-@router.message(F.text.contains("Мой прогресс"))
+@router.message(F.text == "📊 Мой прогресс")
 async def menu_progress(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
@@ -660,14 +724,14 @@ async def menu_progress(message: types.Message):
     conn.close()
 
     progress_text = (
-        f"📊 **Ваш прогресс**\n\n"
+        f"📊 **Ваш духовный прогресс**\n\n"
         f"🔥 Текущая серия (стрик): **{streak} дн.**\n"
-        f"🏆 Вехи постоянства (40 / 90 / 365): Активны и сохраняются навсегда!"
+        f"🏆 Вехи постоянства (40 / 90 / 365 дней): Активны и сохраняются навсегда!"
     )
     await message.answer(progress_text, parse_mode="Markdown")
 
 
-@router.message(F.text.contains("Настройки"))
+@router.message(F.text == "⚙️ Настройки и Режимы")
 async def menu_settings(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
@@ -677,15 +741,32 @@ async def menu_settings(message: types.Message):
     conn.close()
 
     city = row[0] if row and row[0] else "Нерюнгри"
-    mode = row[1] if row and row[1] else "alfard"
+    mode = row[1] if row and row[1] else "Аль-Фард"
 
     settings_text = (
         f"⚙️ **Настройки профиля**\n\n"
-        f"📍 Город: **{city}**\n"
-        f"🎯 Режим: **{mode.upper()}**\n\n"
-        f"Выберите новый режим ниже:"
+        f"📍 Город / регион: **{city}**\n"
+        f"🎯 Режим поклонения: **{mode}**\n\n"
+        f"Вы можете сменить режим ниже или изменить город командой."
     )
-    await message.answer(settings_text, reply_markup=get_modes_keyboard(), parse_mode="Markdown")
+    
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="🌍 Изменить город или регион", callback_data="change_city_btn")],
+            [InlineKeyboardButton(text="🟢 Аль-Фард", callback_data="set_mode_alfard"),
+             InlineKeyboardButton(text="🌙 Аль-Игтихад", callback_data="set_mode_altihad")],
+            [InlineKeyboardButton(text="🕊 Ат-Тазкийя", callback_data="set_mode_tazkiyah"),
+             InlineKeyboardButton(text="🚀 Аль-Ихсан", callback_data="set_mode_ihsan")]
+        ]
+    )
+    await message.answer(settings_text, reply_markup=keyboard, parse_mode="Markdown")
+
+
+@router.callback_query(F.data == "change_city_btn")
+async def callback_change_city(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("🌍 Введите новое название вашего города или региона (например: *Москва*, *Алматы*, *Ташкент*):", parse_mode="Markdown")
+    await state.set_state(OnboardingState.changing_city)
+    await callback.answer()
 
 
 # ==================== ФОНОВЫЙ ПЛАНИРОВЩИК УВЕДОМЛЕНИЙ ====================
@@ -707,8 +788,8 @@ async def prayer_notification_loop():
                 if not city:
                     city = "Нерюнгри"
                 
-                api_city = transliterate_city(city)
-                encoded_city = urllib.parse.quote(api_city)
+                lat_city = translit_city(city)
+                encoded_city = urllib.parse.quote(lat_city)
                 api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
                 
                 try:
@@ -759,7 +840,7 @@ async def prayer_notification_loop():
                                                 logger.error(f"Error sending 5_min: {e}")
                                         conn.close()
 
-                                    # 2. Догоняющее напоминание через 10-15 минут после начала намаза
+                                    # 2. Догоняющее напоминание через 15 минут после начала намаза
                                     catch_up_dt = p_dt + timedelta(minutes=15)
                                     if current_time_str == catch_up_dt.strftime("%H:%M"):
                                         conn = get_db_connection()
@@ -792,7 +873,7 @@ async def prayer_notification_loop():
                                                 logger.error(f"Error sending catch_up: {e}")
                                         conn.close()
 
-                                    # 3. Вечерний итог после Иша (+1 час после Иша) — короткий и емкий
+                                    # 3. Вечерний итог после Иша (+1 час)
                                     if p_name == "Иша":
                                         isha_end_dt = p_dt + timedelta(hours=1)
                                         if current_time_str == isha_end_dt.strftime("%H:%M"):
@@ -804,7 +885,7 @@ async def prayer_notification_loop():
                                             )
                                             if not cursor.fetchone():
                                                 evening_text = (
-                                                    "🌙 **День подошел к концу, и все предписанное выполнено перед Всевышним. Вы сделали всё, что планировали. Спокойной ночи!** ✨"
+                                                    "🌙 **День подошел к концу, и все предписанное выполнено перед Всевышним. Спокойной ночи!** ✨"
                                                 )
                                                 try:
                                                     await bot.send_message(user_id, evening_text, parse_mode="Markdown")
@@ -842,7 +923,7 @@ async def start_web_server():
 # ==================== ЗАПУСК ====================
 async def main():
     init_db()
-    logger.info("Bot «Амаль 365» initialized successfully.")
+    logger.info("Bot «Амаль 365» fully re-initialized and optimized.")
     
     await asyncio.gather(
         start_web_server(),
