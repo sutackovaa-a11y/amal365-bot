@@ -36,33 +36,34 @@ dp.include_router(router)
 
 DB_NAME = "amal365.db"
 
-# ==================== УМНАЯ ТРАНСЛИТЕРАЦИЯ ГОРОДОВ ДЛЯ API ====================
-def translit_city(text: str) -> str:
-    mapping = {
-        'нерюнгри': 'Neryungri',
-        'москва': 'Moscow',
-        'санкт-петербург': 'Saint Petersburg',
-        'казань': 'Kazan',
-        'новосибирск': 'Novosibirsk',
-        'екатеринбург': 'Yekaterinburg',
-        'уфа': 'Ufa',
-        'грозный': 'Grozny',
-        'махачкала': 'Makhachkala',
-        'алматы': 'Almaty',
-        'ташкент': 'Tashkent',
-        'бишкек': 'Bishkek'
-    }
-    text_lower = text.lower().strip()
-    if text_lower in mapping:
-        return mapping[text_lower]
+# ==================== КЭШ РАСПИСАНИЯ (Enterprise Optimization) ====================
+TIMINGS_CACHE = {}
+
+async def get_timings(city: str):
+    """
+    Получение расписания через интеллектуальный эндпоинт timingsByAddress 
+    с поддержкой геокодинга на любом языке (кириллица, регионы, мегаполисы) и кэшированием.
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    cache_key = (city.lower().strip(), today)
     
-    cyr_to_lat = {
-        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e', 'ж': 'zh',
-        'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm', 'н': 'n', 'о': 'o',
-        'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u', 'ф': 'f', 'х': 'h', 'ц': 'ts',
-        'ч': 'ch', 'ш': 'sh', 'щ': 'shch', 'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya'
-    }
-    return ''.join(cyr_to_lat.get(char, char) for char in text_lower).capitalize()
+    if cache_key in TIMINGS_CACHE:
+        return TIMINGS_CACHE[cache_key]
+    
+    encoded_address = urllib.parse.quote(city)
+    api_url = f"http://api.aladhan.com/v1/timingsByAddress?address={encoded_address}&method=2"
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(api_url, timeout=10) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    timings = data["data"]["timings"]
+                    TIMINGS_CACHE[cache_key] = timings
+                    return timings
+    except Exception as e:
+        logger.error(f"Ошибка геокодинга для города {city}: {e}")
+    return None
 
 
 # ==================== БАЗА ДАННЫХ И МИГРАЦИИ ====================
@@ -74,9 +75,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             city TEXT DEFAULT 'Нерюнгри',
-            mode TEXT DEFAULT 'Аль-Фард',
+            mode TEXT DEFAULT 'Аль-Фард (Основа и Обязательство)',
             consent INTEGER DEFAULT 0,
             streak INTEGER DEFAULT 0,
+            health_streak INTEGER DEFAULT 0,
             current_zikr TEXT DEFAULT 'Субханаллах',
             tasbih_target INTEGER DEFAULT 33,
             last_active TEXT
@@ -116,6 +118,15 @@ def init_db():
         )
     """
     )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS completed_health (
+            user_id INTEGER,
+            date TEXT,
+            PRIMARY KEY (user_id, date)
+        )
+    """
+    )
     conn.commit()
     conn.close()
 
@@ -141,9 +152,7 @@ HADITHS_365 = [
     "«Поистине, мягкость присутствует во всем, что украшает собой, и удаляется из всего, что портит его». (Муслим)",
     "«Самый любимый из людей для Аллаха — тот, кто принес больше всего пользы людям». (Ат-Табарани)",
     "«Поминайте Аллаха в благоденствии, и Он вспомнит вас в трудности». (Ат-Тирмизи)",
-    "«Истинно верующий не ругает, не проклинает, не совершает непристойных поступков и не сквернословит». (Ат-Тирмизи)",
-    "«Поистине, Аллах не смотрит на ваши тела и на вашу внешность, но Он смотрит на ваши сердца и ваши дела». (Муслим)",
-    "«Кто молчит, тот спасается». (Ат-Тирмизи)"
+    "«Истинно верующий не ругает, не проклинает, не совершает непристойных поступков и не сквернословит». (Ат-Тирмизи)"
 ]
 
 
@@ -178,30 +187,10 @@ def get_main_menu_keyboard():
 def get_modes_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="🟢 Аль-Фард (Основа и Обязательство)",
-                    callback_data="set_mode_alfard",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🌙 Аль-Игтихад (Усердие и Стремление)",
-                    callback_data="set_mode_altihad",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🕊 Ат-Тазкийя (Очищение души и Свет)",
-                    callback_data="set_mode_tazkiyah",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    text="🚀 Аль-Ихсан (Совершенство и Искренность)",
-                    callback_data="set_mode_ihsan",
-                )
-            ],
+            [InlineKeyboardButton(text="🟢 Аль-Фард (Основа и Обязательство)", callback_data="set_mode_alfard")],
+            [InlineKeyboardButton(text="🌙 Аль-Игтихад (Усердие и Стремление)", callback_data="set_mode_altihad")],
+            [InlineKeyboardButton(text="🕊 Ат-Тазкийя (Очищение души и Свет)", callback_data="set_mode_tazkiyah")],
+            [InlineKeyboardButton(text="🚀 Аль-Ихсан (Совершенство и Искренность)", callback_data="set_mode_ihsan")],
         ]
     )
 
@@ -222,14 +211,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             "Прежде чем начать наш благословенный путь, пожалуйста, подтвердите согласие на сохранение личного прогресса. Ваши данные в абсолютной безопасности."
         )
         keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [
-                    InlineKeyboardButton(
-                        text="✅ Принять и начать путь",
-                        callback_data="accept_terms",
-                    )
-                ]
-            ]
+            inline_keyboard=[[InlineKeyboardButton(text="✅ Принять и начать путь", callback_data="accept_terms")]]
         )
         await message.answer(terms_text, reply_markup=keyboard, parse_mode="Markdown")
     else:
@@ -244,15 +226,12 @@ async def process_terms(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "INSERT OR REPLACE INTO users (user_id, consent) VALUES (?, 1)",
-        (user_id,),
-    )
+    cursor.execute("INSERT OR REPLACE INTO users (user_id, consent) VALUES (?, 1)", (user_id,))
     conn.commit()
     conn.close()
 
     await callback.message.edit_text(
-        "Благодарим за доверие! 🤍\n\n🌍 Напишите название вашего города или региона (например, *Нерюнгри*, *Москва*, *Казань*, *Dubai*), чтобы бот точно рассчитывал расписание намазов.",
+        "Благодарим за доверие! 🤍\n\n🌍 Напишите название вашего города, региона или села на любом языке (например, *Нерюнгри*, *Республика Саха*, *Москва*, *Dubai*), чтобы система точно определила координаты и расписание намазов.",
         parse_mode="Markdown",
     )
     await state.set_state(OnboardingState.waiting_for_city)
@@ -262,35 +241,31 @@ async def process_terms(callback: types.CallbackQuery, state: FSMContext):
 async def process_city(message: types.Message, state: FSMContext):
     city_name = message.text.strip()
     
-    # Защита от случайного ввода команд или кнопок меню
+    # FSM Guard: защита от отправки системных команд или кнопок меню во время ввода
     if city_name.startswith("/") or city_name in ["✨ Шаг дня", "📿 Электронный Тасбих", "⏰ Время намаза", "📊 Мой прогресс", "🌅 Утренние и вечерние азкары", "⚙️ Настройки и Режимы"]:
-        await message.answer("Пожалуйста, введите название вашего населенного пункта текстом (например: *Нерюнгри* или *Москва*).")
+        await message.answer("Пожалуйста, введите название вашего населенного пункта или региона текстом (например: *Нерюнгри*).")
         return
 
     user_id = message.from_user.id
-
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE users SET city = ? WHERE user_id = ?", (city_name, user_id)
-    )
+    cursor.execute("UPDATE users SET city = ? WHERE user_id = ?", (city_name, user_id))
     conn.commit()
     conn.close()
 
     await message.answer(
-        f"Город **{city_name}** успешно сохранен! 🏙\n\nВыберите ваш духовный режим поклонения:",
+        f"Локация **{city_name}** успешно сохранена! 🏙\n\nТеперь выберите ваш духовный режим поклонения:",
         reply_markup=get_modes_keyboard(),
         parse_mode="Markdown",
     )
     await state.set_state(OnboardingState.waiting_for_mode)
 
 
-# Изменение города из настроек
 @router.message(OnboardingState.changing_city)
 async def process_city_change(message: types.Message, state: FSMContext):
     city_name = message.text.strip()
     if city_name.startswith("/"):
-        await message.answer("Введите корректное название города текстом.")
+        await message.answer("Введите корректное название города или региона текстом.")
         return
 
     user_id = message.from_user.id
@@ -312,18 +287,14 @@ MODE_NAMES_MAP = {
 }
 
 @router.callback_query(F.data.startswith("set_mode_"))
-async def process_mode_selection(
-    callback: types.CallbackQuery, state: FSMContext
-):
+async def process_mode_selection(callback: types.CallbackQuery, state: FSMContext):
     mode_code = callback.data.split("_")[2]
-    mode_rus = MODE_NAMES_MAP.get(mode_code, "Аль-Фард")
+    mode_rus = MODE_NAMES_MAP.get(mode_code, "Аль-Фард (Основа и Обязательство)")
     user_id = callback.from_user.id
 
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE users SET mode = ? WHERE user_id = ?", (mode_rus, user_id)
-    )
+    cursor.execute("UPDATE users SET mode = ? WHERE user_id = ?", (mode_rus, user_id))
     cursor.execute("SELECT city FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     city = row[0] if row and row[0] else "Нерюнгри"
@@ -331,7 +302,6 @@ async def process_mode_selection(
     conn.close()
 
     await state.clear()
-
     try:
         await callback.message.edit_text(
             f"✅ Режим установлен: **{mode_rus}**\n📍 Локация: **{city}**\n\nГлавное меню готово 👇",
@@ -339,13 +309,10 @@ async def process_mode_selection(
         )
     except Exception:
         pass
-        
-    await callback.message.answer(
-        "Выберите нужный раздел в меню:", reply_markup=get_main_menu_keyboard()
-    )
+    await callback.message.answer("Выберите нужный раздел в меню:", reply_markup=get_main_menu_keyboard())
 
 
-# ==================== ШАГ ДНЯ (Ближайший намаз) ====================
+# ==================== ШАГ ДНЯ (Духовный + Физическое здоровье) ====================
 @router.message(F.text == "✨ Шаг дня")
 async def menu_daily_step(message: types.Message):
     user_id = message.from_user.id
@@ -356,58 +323,46 @@ async def menu_daily_step(message: types.Message):
     city = row[0] if row and row[0] else "Нерюнгри"
     conn.close()
 
-    lat_city = translit_city(city)
-    encoded_city = urllib.parse.quote(lat_city)
-    api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
+    timings = await get_timings(city)
     
-    step_text = ""
-    async with aiohttp.ClientSession() as session:
-        async with session.get(api_url) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                timings = data["data"]["timings"]
-                
-                prayers = {
-                    "Фаджр": timings.get('Fajr'),
-                    "Зухр": timings.get('Dhuhr'),
-                    "Аср": timings.get('Asr'),
-                    "Магриб": timings.get('Maghrib'),
-                    "Иша": timings.get('Isha')
-                }
-                
-                now = datetime.now()
-                current_time_str = now.strftime("%H:%M")
-                
-                next_prayer_name = None
-                next_prayer_time = None
-                
-                for name, p_time in prayers.items():
-                    if p_time and p_time > current_time_str:
-                        next_prayer_name = name
-                        next_prayer_time = p_time
-                        break
-                
-                if not next_prayer_name:
-                    next_prayer_name = "Фаджр [Завтра]"
-                    next_prayer_time = prayers.get('Fajr')
-                
-                step_text = (
-                    f"✨ **Ваш духовный Шаг дня ({city})**\n\n"
-                    f"🎯 **Ближайший намаз:**\n"
-                    f"• **{next_prayer_name}** в **{next_prayer_time}**\n\n"
-                    f"📚 *«Поистине, намаз предписан верующим в определенное время»* (Сура Ан-Ниса, 103).\n\n"
-                    f"Нажмите кнопку после совершения молитвы:"
-                )
-            else:
-                step_text = f"✨ **Шаг дня**\n\nНе удалось получить точное расписание для региона *{city}*. Пожалуйста, проверьте правильность названия в настройках."
+    if timings:
+        prayers = {
+            "Фаджр": timings.get('Fajr'),
+            "Зухр": timings.get('Dhuhr'),
+            "Аср": timings.get('Asr'),
+            "Магриб": timings.get('Maghrib'),
+            "Иша": timings.get('Isha')
+        }
+        
+        now = datetime.now()
+        current_time_str = now.strftime("%H:%M")
+        next_prayer_name, next_prayer_time = None, None
+        
+        for name, p_time in prayers.items():
+            if p_time and p_time > current_time_str:
+                next_prayer_name = name
+                next_prayer_time = p_time
+                break
+        
+        if not next_prayer_name:
+            next_prayer_name = "Фаджр [Завтра]"
+            next_prayer_time = prayers.get('Fajr')
+        
+        step_text = (
+            f"✨ **Ваш духовный и телесный Шаг дня ({city})**\n\n"
+            f"🎯 **Ближайший намаз:**\n"
+            f"• **{next_prayer_name}** в **{next_prayer_time}**\n\n"
+            f"📚 *«Поистине, намаз предписан верующим в определенное время»* (Сура Ан-Ниса, 103).\n\n"
+            f"🏃‍♂️ *Сильный и здоровый верующий любимее Аллаха, чем слабый. Уделите внимание и физической активности (прогулка, шаги, спорт)!*\n\n"
+            f"Выберите действие ниже:"
+        )
+    else:
+        step_text = f"✨ **Шаг дня**\n\nНе удалось загрузить расписание для региона *{city}*. Проверьте название в настройках."
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="✅ Отметить выполненным", callback_data="complete_dynamic_step"
-                )
-            ]
+            [InlineKeyboardButton(text="✅ Отметить намаз выполненным", callback_data="complete_dynamic_step")],
+            [InlineKeyboardButton(text="🏃‍♂️ Отметить активность (Спорт/Шаги)", callback_data="complete_health_step")]
         ]
     )
     await message.answer(step_text, reply_markup=keyboard, parse_mode="Markdown")
@@ -425,22 +380,54 @@ async def complete_dynamic_step(callback: types.CallbackQuery):
     u_row = cursor.fetchone()
     if u_row:
         streak = u_row[0] if u_row[0] is not None else 0
-        new_streak = streak + 1
-        cursor.execute("UPDATE users SET streak = ? WHERE user_id = ?", (new_streak, user_id))
+        cursor.execute("UPDATE users SET streak = ? WHERE user_id = ?", (streak + 1, user_id))
         conn.commit()
     conn.close()
 
     completion_text = (
         f"{callback.message.text}\n\n"
-        f"**✅ ВЫПОЛНЕНО! Машааллах, баракаллаху фикум.** 🤍\n\n"
+        f"**✅ НАМАЗ ВЫПОЛНЕН! Машааллах, баракаллаху фикум.** 🤍\n\n"
         f"📖 **Хадис дня:**\n{hadith}\n\n"
-        f"🎯 *Шаг зачтен. Ваша серия растет!*"
+        f"🎯 *Духовный шаг зачтен. Ваша серия растет!*"
     )
     try:
         await callback.message.edit_text(completion_text, parse_mode="Markdown")
     except Exception:
         pass
-    await callback.answer("Шаг успешно засчитан!")
+    await callback.answer("Намаз успешно зачтен!")
+
+
+@router.callback_query(F.data == "complete_health_step")
+async def complete_health_step(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    # Проверяем, отмечал ли уже активность сегодня
+    cursor.execute("SELECT 1 FROM completed_health WHERE user_id = ? AND date = ?", (user_id, today))
+    already_done = cursor.fetchone()
+
+    if not already_done:
+        cursor.execute("INSERT INTO completed_health (user_id, date) VALUES (?, ?)", (user_id, today))
+        cursor.execute("SELECT health_streak FROM users WHERE user_id = ?", (user_id,))
+        h_row = cursor.fetchone()
+        h_streak = h_row[0] if h_row and h_row[0] is not None else 0
+        cursor.execute("UPDATE users SET health_streak = ? WHERE user_id = ?", (h_streak + 1, user_id))
+        conn.commit()
+    conn.close()
+
+    msg = (
+        f"{callback.message.text}\n\n"
+        f"**💪 АКТИВНОСТЬ ЗАСЧИТАНА! Баракаллаху фикум.** ✨\n\n"
+        f"🌿 *«Сильный верующий лучше и любимее перед Аллахом, чем верующий слабый, хотя в каждом из них есть благо»* (Муслим).\n\n"
+        f"Забота о теле — это тоже проявление благодарности Всевышнему за дар жизни!"
+    )
+    try:
+        await callback.message.edit_text(msg, parse_mode="Markdown")
+    except Exception:
+        pass
+    await callback.answer("Физическая активность успешно сохранена!")
 
 
 # ==================== ЭЛЕКТРОННЫЙ ТАСБИХ (33 / 99 / ♾️) ====================
@@ -455,18 +442,10 @@ def get_tasbih_keyboard(target_val):
     target_display = str(target_val) if target_val > 0 else "♾️"
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(
-                    text="➕ НАЖАТЬ ЗИКР (+1)", callback_data="tasbih_inc"
-                )
-            ],
-            [
-                InlineKeyboardButton(text=f"🎯 Цель: {target_display}", callback_data="tasbih_toggle_target"),
-                InlineKeyboardButton(text="🔄 Сброс", callback_data="tasbih_reset"),
-            ],
-            [
-                InlineKeyboardButton(text="🔀 Следующий зикр", callback_data="tasbih_change"),
-            ],
+            [InlineKeyboardButton(text="➕ НАЖАТЬ ЗИКР (+1)", callback_data="tasbih_inc")],
+            [InlineKeyboardButton(text=f"🎯 Цель: {target_display}", callback_data="tasbih_toggle_target"),
+             InlineKeyboardButton(text="🔄 Сброс", callback_data="tasbih_reset")],
+            [InlineKeyboardButton(text="🔀 Следующий зикр", callback_data="tasbih_change")],
         ]
     )
 
@@ -484,11 +463,7 @@ async def menu_tasbih(message: types.Message):
     target = row[1] if row and row[1] is not None else 33
 
     active_zikr = next((z for z in ZIKRS_LIST if z["name"] == current_zikr_name), ZIKRS_LIST[0])
-
-    cursor.execute(
-        "SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
-        (user_id, today, active_zikr["name"]),
-    )
+    cursor.execute("SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?", (user_id, today, active_zikr["name"]))
     t_row = cursor.fetchone()
     count = t_row[0] if t_row else 0
     conn.close()
@@ -515,34 +490,22 @@ async def tasbih_increment(callback: types.CallbackQuery):
     target = row[1] if row and row[1] is not None else 33
 
     active_zikr = next((z for z in ZIKRS_LIST if z["name"] == current_zikr_name), ZIKRS_LIST[0])
-
-    cursor.execute(
-        "SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
-        (user_id, today, active_zikr["name"]),
-    )
+    cursor.execute("SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?", (user_id, today, active_zikr["name"]))
     t_row = cursor.fetchone()
     current_count = t_row[0] if t_row else 0
 
     new_count = current_count + 1
     notification_msg = f"+1 ({new_count})"
 
-    # Если цель задана (например 33 или 99) и мы ее достигли
     if target > 0 and new_count >= target:
-        cursor.execute(
-            "INSERT OR REPLACE INTO tasbih (user_id, date, zikr_name, count, target) VALUES (?, ?, ?, ?, ?)",
-            (user_id, today, active_zikr["name"], target, target),
-        )
+        cursor.execute("INSERT OR REPLACE INTO tasbih (user_id, date, zikr_name, count, target) VALUES (?, ?, ?, ?, ?)", (user_id, today, active_zikr["name"], target, target))
         conn.commit()
         count = target
         notification_msg = f"🎉 Цель {target} выполнена!"
     else:
-        cursor.execute(
-            "INSERT OR REPLACE INTO tasbih (user_id, date, zikr_name, count, target) VALUES (?, ?, ?, ?, ?)",
-            (user_id, today, active_zikr["name"], new_count, target),
-        )
+        cursor.execute("INSERT OR REPLACE INTO tasbih (user_id, date, zikr_name, count, target) VALUES (?, ?, ?, ?, ?)", (user_id, today, active_zikr["name"], new_count, target))
         conn.commit()
         count = new_count
-
     conn.close()
 
     target_str = str(target) if target > 0 else "♾️"
@@ -551,7 +514,6 @@ async def tasbih_increment(callback: types.CallbackQuery):
         f"✨ **{active_zikr['name']}** ({active_zikr['arabic']})\n\n"
         f"📊 Счёт: **{count} / {target_str}**"
     )
-
     try:
         await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(target), parse_mode="Markdown")
     except Exception:
@@ -569,43 +531,31 @@ async def tasbih_toggle_target(callback: types.CallbackQuery):
     current_target = row[0] if row and row[0] is not None else 33
     current_zikr_name = row[1] if row and row[1] else "Субханаллах"
 
-    # Циклическое переключение целей: 33 -> 99 -> -1 (♾️) -> 33
-    if current_target == 33:
-        new_target = 99
-    elif current_target == 99:
-        new_target = -1
-    else:
-        new_target = 33
-
+    new_target = 99 if current_target == 33 else (-1 if current_target == 99 else 33)
     cursor.execute("UPDATE users SET tasbih_target = ? WHERE user_id = ?", (new_target, user_id))
     conn.commit()
 
     today = datetime.now().strftime("%Y-%m-%d")
-    cursor.execute(
-        "SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
-        (user_id, today, current_zikr_name),
-    )
+    cursor.execute("SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?", (user_id, today, current_zikr_name))
     t_row = cursor.fetchone()
     count = t_row[0] if t_row else 0
     conn.close()
 
     active_zikr = next((z for z in ZIKRS_LIST if z["name"] == current_zikr_name), ZIKRS_LIST[0])
     target_str = str(new_target) if new_target > 0 else "♾️"
-
     updated_text = (
         f"📿 **Электронный Тасбих**\n\n"
         f"✨ **{active_zikr['name']}** ({active_zikr['arabic']})\n\n"
         f"📊 Счёт: **{count} / {target_str}**"
     )
     await callback.message.edit_text(updated_text, reply_markup=get_tasbih_keyboard(new_target), parse_mode="Markdown")
-    await callback.answer(f"Цель изменена на: {target_str}")
+    await callback.answer(f"Цель: {target_str}")
 
 
 @router.callback_query(F.data == "tasbih_reset")
 async def tasbih_reset(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     today = datetime.now().strftime("%Y-%m-%d")
-
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT current_zikr, tasbih_target FROM users WHERE user_id = ?", (user_id,))
@@ -614,10 +564,7 @@ async def tasbih_reset(callback: types.CallbackQuery):
     target = row[1] if row and row[1] is not None else 33
     active_zikr = next((z for z in ZIKRS_LIST if z["name"] == current_zikr_name), ZIKRS_LIST[0])
 
-    cursor.execute(
-        "UPDATE tasbih SET count = 0 WHERE user_id = ? AND date = ? AND zikr_name = ?",
-        (user_id, today, active_zikr["name"]),
-    )
+    cursor.execute("UPDATE tasbih SET count = 0 WHERE user_id = ? AND date = ? AND zikr_name = ?", (user_id, today, active_zikr["name"]))
     conn.commit()
     conn.close()
 
@@ -642,16 +589,11 @@ async def tasbih_change(callback: types.CallbackQuery):
     target = row[1] if row and row[1] is not None else 33
 
     current_idx = next((i for i, z in enumerate(ZIKRS_LIST) if z["name"] == current_zikr_name), 0)
-    next_idx = (current_idx + 1) % len(ZIKRS_LIST)
-    next_zikr = ZIKRS_LIST[next_idx]
+    next_zikr = ZIKRS_LIST[(current_idx + 1) % len(ZIKRS_LIST)]
 
     cursor.execute("UPDATE users SET current_zikr = ? WHERE user_id = ?", (next_zikr["name"], user_id))
-    
     today = datetime.now().strftime("%Y-%m-%d")
-    cursor.execute(
-        "SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?",
-        (user_id, today, next_zikr["name"]),
-    )
+    cursor.execute("SELECT count FROM tasbih WHERE user_id = ? AND date = ? AND zikr_name = ?", (user_id, today, next_zikr["name"]))
     t_row = cursor.fetchone()
     count = t_row[0] if t_row else 0
     conn.commit()
@@ -678,54 +620,69 @@ async def menu_prayer_times(message: types.Message):
     city = row[0] if row and row[0] else "Нерюнгри"
     conn.close()
 
-    lat_city = translit_city(city)
-    encoded_city = urllib.parse.quote(lat_city)
-    api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
+    timings = await get_timings(city)
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(api_url) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                timings = data["data"]["timings"]
-                prayer_text = (
-                    f"🕌 **Расписание намазов — {city}**\n\n"
-                    f"🌅 Фаджр: {timings.get('Fajr')}\n"
-                    f"☀️ Восход: {timings.get('Sunrise')}\n"
-                    f"🏙 Зухр: {timings.get('Dhuhr')}\n"
-                    f"🌇 Аср: {timings.get('Asr')}\n"
-                    f"🌆 Магриб: {timings.get('Maghrib')}\n"
-                    f"🌙 Иша: {timings.get('Isha')}"
-                )
-            else:
-                prayer_text = f"Не удалось загрузить расписание для региона *{city}*. Пожалуйста, проверьте правильность названия в настройках."
+    if timings:
+        prayer_text = (
+            f"🕌 **Расписание намазов — {city}**\n\n"
+            f"🌅 Фаджр: {timings.get('Fajr')}\n"
+            f"☀️ Восход: {timings.get('Sunrise')}\n"
+            f"🏙 Зухр: {timings.get('Dhuhr')}\n"
+            f"🌇 Аср: {timings.get('Asr')}\n"
+            f"🌆 Магриб: {timings.get('Maghrib')}\n"
+            f"🌙 Иша: {timings.get('Isha')}"
+        )
+    else:
+        prayer_text = f"Не удалось загрузить расписание для региона *{city}*. Проверьте правильность написания в настройках."
 
     await message.answer(prayer_text, parse_mode="Markdown")
 
 
-# ==================== АЗКАРЫ, ПРОГРЕСС И НАСТРОЙКИ ====================
+# ==================== ИНТЕЛЛЕКТУАЛЬНЫЕ АЗКАРЫ ПО ВРЕМЕНИ ====================
 @router.message(F.text == "🌅 Утренние и вечерние азкары")
 async def menu_adhkar(message: types.Message):
-    text = (
-        "🌅 **Утренние и вечерние азкары**\n\n"
-        "🛡 **Утренние (после Фаджра):** Аят аль-Курси, Аль-Ихляс, Аль-Фаляк, Ан-Нас (по 3 раза).\n\n"
-        "🌙 **Вечерние (после Магриба):** Аят аль-Курси, Аль-Ихляс, Аль-Фаляк, Ан-Нас (по 3 раза)."
-    )
+    current_hour = datetime.now().hour
+    
+    # До 16:00 выдаем утренние, после 16:00 — вечерние
+    if current_hour < 16:
+        text = (
+            "🌅 **Утренние азкары (Защита и Поминание)**\n\n"
+            "• Рекомендовано читать после утреннего намаза (Фаджр).\n\n"
+            "🛡 **Основа защиты:**\n"
+            "1. Аят аль-Курси (Сура «Аль-Бакара», 255).\n"
+            "2. Суры «Аль-Ихляс», «Аль-Фаляк», «Ан-Нас» (по 3 раза).\n"
+            "3. *«Аллахумма бика асбахна ва бика амсайна, ва бика нахья ва бика намуту ва иляйка ан-нушур»*\n\n"
+            "🕊 Пусть этот день начнется с благословения и защиты Всевышнего."
+        )
+    else:
+        text = (
+            "🌙 **Вечерние азкары (Защита и Покой)**\n\n"
+            "• Рекомендовано читать после закатного намаза (Магриб).\n\n"
+            "🛡 **Основа защиты:**\n"
+            "1. Аят аль-Курси (Сура «Аль-Бакара», 255).\n"
+            "2. Суры «Аль-Ихляс», «Аль-Фаляк», «Ан-Нас» (по 3 раза).\n"
+            "3. *«Аллахумма бика амсайна ва бика асбахна, ва бика нахья ва бика намуту ва иляйка аль-масир»*\n\n"
+            "🕊 Пусть вечер принесет умиротворение вашему сердцу."
+        )
     await message.answer(text, parse_mode="Markdown")
 
 
+# ==================== ПРОГРЕСС И НАСТРОЙКИ ====================
 @router.message(F.text == "📊 Мой прогресс")
 async def menu_progress(message: types.Message):
     user_id = message.from_user.id
     conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT streak FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT streak, health_streak FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     streak = row[0] if row and row[0] is not None else 0
+    health_streak = row[1] if row and row[1] is not None else 0
     conn.close()
 
     progress_text = (
-        f"📊 **Ваш духовный прогресс**\n\n"
-        f"🔥 Текущая серия (стрик): **{streak} дн.**\n"
+        f"📊 **Ваш комплексный прогресс**\n\n"
+        f"🔥 Духовная серия (намазы): **{streak} дн.**\n"
+        f"💪 Физическая активность (спорт/шаги): **{health_streak} дн.**\n\n"
         f"🏆 Вехи постоянства (40 / 90 / 365 дней): Активны и сохраняются навсегда!"
     )
     await message.answer(progress_text, parse_mode="Markdown")
@@ -741,13 +698,13 @@ async def menu_settings(message: types.Message):
     conn.close()
 
     city = row[0] if row and row[0] else "Нерюнгри"
-    mode = row[1] if row and row[1] else "Аль-Фард"
+    mode = row[1] if row and row[1] else "Аль-Фард (Основа и Обязательство)"
 
     settings_text = (
         f"⚙️ **Настройки профиля**\n\n"
         f"📍 Город / регион: **{city}**\n"
         f"🎯 Режим поклонения: **{mode}**\n\n"
-        f"Вы можете сменить режим ниже или изменить город командой."
+        f"Выберите нужное действие ниже:"
     )
     
     keyboard = InlineKeyboardMarkup(
@@ -764,7 +721,7 @@ async def menu_settings(message: types.Message):
 
 @router.callback_query(F.data == "change_city_btn")
 async def callback_change_city(callback: types.CallbackQuery, state: FSMContext):
-    await callback.message.answer("🌍 Введите новое название вашего города или региона (например: *Москва*, *Алматы*, *Ташкент*):", parse_mode="Markdown")
+    await callback.message.answer("🌍 Введите новое название вашего города или региона (например: *Нерюнгри*, *Республика Саха*, *Москва*):", parse_mode="Markdown")
     await state.set_state(OnboardingState.changing_city)
     await callback.answer()
 
@@ -788,118 +745,86 @@ async def prayer_notification_loop():
                 if not city:
                     city = "Нерюнгри"
                 
-                lat_city = translit_city(city)
-                encoded_city = urllib.parse.quote(lat_city)
-                api_url = f"http://api.aladhan.com/v1/timingsByCity?city={encoded_city}&country=&method=2"
+                timings = await get_timings(city)
+                if not timings:
+                    continue
                 
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        async with session.get(api_url, timeout=5) as resp:
-                            if resp.status == 200:
-                                data = await resp.json()
-                                timings = data["data"]["timings"]
-                                
-                                prayers = {
-                                    "Фаджр": timings.get('Fajr'),
-                                    "Зухр": timings.get('Dhuhr'),
-                                    "Аср": timings.get('Asr'),
-                                    "Магриб": timings.get('Maghrib'),
-                                    "Иша": timings.get('Isha')
-                                }
-                                
-                                for p_name, p_time in prayers.items():
-                                    if not p_time:
-                                        continue
-                                    
-                                    p_dt = datetime.strptime(f"{current_date} {p_time}", "%Y-%m-%d %H:%M")
-                                    
-                                    # 1. За 5 минут до намаза (специфичный хадис)
-                                    notify_5_dt = p_dt - timedelta(minutes=5)
-                                    if current_time_str == notify_5_dt.strftime("%H:%M"):
-                                        conn = get_db_connection()
-                                        cursor = conn.cursor()
-                                        cursor.execute(
-                                            "SELECT 1 FROM sent_notifications WHERE user_id = ? AND date = ? AND prayer_name = ? AND notif_type = '5_min'",
-                                            (user_id, current_date, p_name)
-                                        )
-                                        if not cursor.fetchone():
-                                            hadith = PRAYER_HADITHS.get(p_name, "«Поминайте Аллаха и стремитесь к благому».")
-                                            text = (
-                                                f"⏰ **До намаза {p_name} осталось 5 минут!**\n\n"
-                                                f"📖 **Хадис о намазе:**\n{hadith}\n\n"
-                                                f"Подготовьтесь к молитве."
-                                            )
-                                            try:
-                                                await bot.send_message(user_id, text, parse_mode="Markdown")
-                                                cursor.execute(
-                                                    "INSERT INTO sent_notifications (user_id, date, prayer_name, notif_type) VALUES (?, ?, ?, '5_min')",
-                                                    (user_id, current_date, p_name)
-                                                )
-                                                conn.commit()
-                                            except Exception as e:
-                                                logger.error(f"Error sending 5_min: {e}")
-                                        conn.close()
+                prayers = {
+                    "Фаджр": timings.get('Fajr'),
+                    "Зухр": timings.get('Dhuhr'),
+                    "Аср": timings.get('Asr'),
+                    "Магриб": timings.get('Maghrib'),
+                    "Иша": timings.get('Isha')
+                }
+                
+                for p_name, p_time in prayers.items():
+                    if not p_time:
+                        continue
+                    
+                    p_dt = datetime.strptime(f"{current_date} {p_time}", "%Y-%m-%d %H:%M")
+                    
+                    # 1. За 5 минут до намаза (специфичный хадис)
+                    notify_5_dt = p_dt - timedelta(minutes=5)
+                    if current_time_str == notify_5_dt.strftime("%H:%M"):
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT 1 FROM sent_notifications WHERE user_id = ? AND date = ? AND prayer_name = ? AND notif_type = '5_min'", (user_id, current_date, p_name))
+                        if not cursor.fetchone():
+                            hadith = PRAYER_HADITHS.get(p_name, "«Поминайте Аллаха и стремитесь к благому».")
+                            text = (
+                                f"⏰ **До намаза {p_name} осталось 5 минут!**\n\n"
+                                f"📖 **Хадис о намазе:**\n{hadith}\n\n"
+                                f"Подготовьтесь к молитве."
+                            )
+                            try:
+                                await bot.send_message(user_id, text, parse_mode="Markdown")
+                                cursor.execute("INSERT INTO sent_notifications (user_id, date, prayer_name, notif_type) VALUES (?, ?, ?, '5_min')", (user_id, current_date, p_name))
+                                conn.commit()
+                            except Exception as e:
+                                logger.error(f"Error sending 5_min: {e}")
+                        conn.close()
 
-                                    # 2. Догоняющее напоминание через 15 минут после начала намаза
-                                    catch_up_dt = p_dt + timedelta(minutes=15)
-                                    if current_time_str == catch_up_dt.strftime("%H:%M"):
-                                        conn = get_db_connection()
-                                        cursor = conn.cursor()
-                                        cursor.execute(
-                                            "SELECT 1 FROM completed_prayers WHERE user_id = ? AND date = ? AND prayer_name = ?",
-                                            (user_id, current_date, p_name)
-                                        )
-                                        completed = cursor.fetchone()
-                                        
-                                        cursor.execute(
-                                            "SELECT 1 FROM sent_notifications WHERE user_id = ? AND date = ? AND prayer_name = ? AND notif_type = 'catch_up'",
-                                            (user_id, current_date, p_name)
-                                        )
-                                        sent = cursor.fetchone()
+                    # 2. Догоняющее напоминание через 15 минут после начала намаза
+                    catch_up_dt = p_dt + timedelta(minutes=15)
+                    if current_time_str == catch_up_dt.strftime("%H:%M"):
+                        conn = get_db_connection()
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT 1 FROM completed_prayers WHERE user_id = ? AND date = ? AND prayer_name = ?", (user_id, current_date, p_name))
+                        completed = cursor.fetchone()
+                        cursor.execute("SELECT 1 FROM sent_notifications WHERE user_id = ? AND date = ? AND prayer_name = ? AND notif_type = 'catch_up'", (user_id, current_date, p_name))
+                        sent = cursor.fetchone()
 
-                                        if not completed and not sent:
-                                            text = (
-                                                f"🌿 **Напоминание о фарзе!**\n\n"
-                                                f"Время намаза **{p_name}** уже идет. Обязательная молитва — ваша защита и связь со Всевышним. Поторопитесь совершить этот шаг!"
-                                            )
-                                            try:
-                                                await bot.send_message(user_id, text, parse_mode="Markdown")
-                                                cursor.execute(
-                                                    "INSERT INTO sent_notifications (user_id, date, prayer_name, notif_type) VALUES (?, ?, ?, 'catch_up')",
-                                                    (user_id, current_date, p_name)
-                                                )
-                                                conn.commit()
-                                            except Exception as e:
-                                                logger.error(f"Error sending catch_up: {e}")
-                                        conn.close()
+                        if not completed and not sent:
+                            text = (
+                                f"🌿 **Напоминание о фарзе!**\n\n"
+                                f"Время намаза **{p_name}** уже идет. Обязательная молитва — ваша защита и связь со Всевышним. Поторопитесь совершить этот шаг!"
+                            )
+                            try:
+                                await bot.send_message(user_id, text, parse_mode="Markdown")
+                                cursor.execute("INSERT INTO sent_notifications (user_id, date, prayer_name, notif_type) VALUES (?, ?, ?, 'catch_up')", (user_id, current_date, p_name))
+                                conn.commit()
+                            except Exception as e:
+                                logger.error(f"Error sending catch_up: {e}")
+                        conn.close()
 
-                                    # 3. Вечерний итог после Иша (+1 час)
-                                    if p_name == "Иша":
-                                        isha_end_dt = p_dt + timedelta(hours=1)
-                                        if current_time_str == isha_end_dt.strftime("%H:%M"):
-                                            conn = get_db_connection()
-                                            cursor = conn.cursor()
-                                            cursor.execute(
-                                                "SELECT 1 FROM sent_notifications WHERE user_id = ? AND date = ? AND prayer_name = 'Isha_End' AND notif_type = 'evening'",
-                                                (user_id, current_date)
-                                            )
-                                            if not cursor.fetchone():
-                                                evening_text = (
-                                                    "🌙 **День подошел к концу, и все предписанное выполнено перед Всевышним. Спокойной ночи!** ✨"
-                                                )
-                                                try:
-                                                    await bot.send_message(user_id, evening_text, parse_mode="Markdown")
-                                                    cursor.execute(
-                                                        "INSERT INTO sent_notifications (user_id, date, prayer_name, notif_type) VALUES (?, ?, 'Isha_End', 'evening')",
-                                                        (user_id, current_date)
-                                                    )
-                                                    conn.commit()
-                                                except Exception as e:
-                                                    logger.error(f"Error sending evening message: {e}")
-                                            conn.close()
-
-                except Exception as e:
-                    logger.error(f"API prayer error for {city}: {e}")
+                    # 3. Вечерний итог после Иша (+1 час)
+                    if p_name == "Иша":
+                        isha_end_dt = p_dt + timedelta(hours=1)
+                        if current_time_str == isha_end_dt.strftime("%H:%M"):
+                            conn = get_db_connection()
+                            cursor = conn.cursor()
+                            cursor.execute("SELECT 1 FROM sent_notifications WHERE user_id = ? AND date = ? AND prayer_name = 'Isha_End' AND notif_type = 'evening'", (user_id, current_date))
+                            if not cursor.fetchone():
+                                evening_text = (
+                                    "🌙 **День подошел к концу, и все предписанное выполнено перед Всевышним. Спокойной ночи!** ✨"
+                                )
+                                try:
+                                    await bot.send_message(user_id, evening_text, parse_mode="Markdown")
+                                    cursor.execute("INSERT INTO sent_notifications (user_id, date, prayer_name, notif_type) VALUES (?, ?, 'Isha_End', 'evening')", (user_id, current_date))
+                                    conn.commit()
+                                except Exception as e:
+                                    logger.error(f"Error sending evening message: {e}")
+                            conn.close()
         except Exception as e:
             logger.error(f"Loop error: {e}")
 
@@ -923,7 +848,7 @@ async def start_web_server():
 # ==================== ЗАПУСК ====================
 async def main():
     init_db()
-    logger.info("Bot «Амаль 365» fully re-initialized and optimized.")
+    logger.info("Bot «Амаль 365» fully re-initialized with Enterprise Architecture.")
     
     await asyncio.gather(
         start_web_server(),
