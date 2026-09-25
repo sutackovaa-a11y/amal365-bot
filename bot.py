@@ -50,7 +50,7 @@ async def main():
     # Запускаем веб-сервер для Render и саму логику бота
     await web_server()
     logging.info("Бот запущен...")
-    await dp.start_polling(bot)
+    await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
     asyncio.run(main())
