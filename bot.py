@@ -54,6 +54,13 @@ class BooksStates(StatesGroup):
 class ActivityStates(StatesGroup):
     entering_data = State()
 
+MODE_NAMES = {
+    "alfard": "Аль-Фард (Обязательное)",
+    "alistikama": "Аль-Истикама (Постоянство)",
+    "attazkiya": "Ат-Тазкия (Очищение души)",
+    "alihsan": "Аль-Ихсан (Совершенствование)"
+}
+
 HADITHS = {
     "Фаджр": [
         "Два раката Фаджра лучше мира и всего, что в нём. (Муслим)",
@@ -166,7 +173,6 @@ def get_next_prayer_info(times: dict):
                 return name, t_str, time_left
         except Exception:
             continue
-    # Если все прошли, то следующий Фаджр завтра
     return "Фаджр", times["Фаджр"], calculate_time_left(times["Фаджр"])
 
 # --- KEYBOARDS ---
@@ -300,7 +306,7 @@ async def process_mode_text(message: Message, state: FSMContext):
         update_user(message.from_user.id, mode=mode, current_level=mode)
         await state.clear()
         
-        user = get_user(message.from_user.id)
+        user = get_user(callback.from_user.id) if 'callback' in locals() else get_user(message.from_user.id)
         user_mode = user.get("mode", "alfard") if user else mode
         text = "Альхамдулиллях! Регистрация завершена. Ваш путь начался 🤍"
         await message.answer(text, reply_markup=kb_main_menu(user_mode), parse_mode="HTML")
@@ -314,11 +320,12 @@ async def go_to_main(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     user = get_user(callback.from_user.id)
     mode = user.get("mode", "alfard") if user else "alfard"
+    mode_ru = MODE_NAMES.get(mode, "Аль-Фард (Обязательное)")
     streak = user.get("streak_days", 1) if user else 1
     text = (
         f"Главное меню 🌙\n\n"
         f"🔥 Текущая серия: <b>{streak} дней</b>\n"
-        f"🌱 Режим: <b>{mode.upper()}</b>"
+        f"🌱 Режим: <b>{mode_ru}</b>"
     )
     await callback.message.edit_text(text, reply_markup=kb_main_menu(mode), parse_mode="HTML")
     await callback.answer()
@@ -555,6 +562,7 @@ async def menu_path(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     streak = user.get("streak_days", 1) if user else 1
     mode = user.get("mode", "alfard") if user else "alfard"
+    mode_ru = MODE_NAMES.get(mode, "Аль-Фард (Обязательное)")
     quran = user.get("quran_pages", 0) if user else 0
     books = user.get("books_pages", 0) if user else 0
     steps = user.get("activity_steps", 0) if user else 0
@@ -563,7 +571,7 @@ async def menu_path(callback: CallbackQuery):
     text = (
         f"📊 <b>Мой путь</b>\n\n"
         f"🔥 Серия: <b>{streak} дней</b>\n"
-        f"🌱 Режим: <b>{mode.upper()}</b>\n"
+        f"🌱 Режим: <b>{mode_ru}</b>\n"
         f"📖 Страниц Корана: {quran}\n"
         f"📚 Страниц книг: {books}\n"
         f"🏃 Шаги: {steps}\n"
@@ -680,7 +688,7 @@ async def check_adaptive_milestones():
 async def upgrade_mode(callback: CallbackQuery):
     new_mode = callback.data.split("_")[1]
     update_user(callback.from_user.id, mode=new_mode, current_level=new_mode)
-    text = f"Поздравляем! Ваш режим успешно изменен на <b>{new_mode.upper()}</b> 🤍"
+    text = f"Поздравляем! Ваш режим успешно изменен на <b>{MODE_NAMES.get(new_mode, new_mode)}</b> 🤍"
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌙 В меню", callback_data="go_to_main")]])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
