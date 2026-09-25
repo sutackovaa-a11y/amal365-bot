@@ -25,23 +25,19 @@ def create_user(telegram_id: int, username: str = None, first_name: str = None):
                 "language": "ru",
                 "city": "Не указан",
                 "mode": "alfard",
-                "streak_days": 1,
                 "current_level": "alfard",
+                "streak_days": 1,
                 "pause_mode": False,
-                "pause_reason": None,
                 "fajr_done": False,
                 "dhuhr_done": False,
                 "asr_done": False,
                 "maghrib_done": False,
                 "isha_done": False,
                 "tahajjud_done": False,
-                "salawat_count": 0,
                 "tasbih_count": 0,
                 "quran_pages": 0,
                 "books_pages": 0,
-                "activity_steps": 0,
-                "activity_workout": 0,
-                "created_at": datetime.now(timezone.utc).isoformat()
+                "activity_steps": 0
             }
             response = supabase.table("users").insert(user_data).execute()
             return response.data
@@ -89,8 +85,7 @@ def save_prayer(telegram_id: int, prayer_name: str):
 def save_adhkar(telegram_id: int, adhkar_type: str):
     user = get_user(telegram_id)
     if user:
-        key = f"{adhkar_type}_adhkar_done"
-        return update_user(telegram_id, **{key: True})
+        return user
     return None
 
 def save_tasbih(telegram_id: int, count: int):
@@ -118,16 +113,14 @@ def save_activity(telegram_id: int, steps: int = 0, workout: int = 0):
     user = get_user(telegram_id)
     if user:
         curr_steps = user.get("activity_steps", 0)
-        curr_workout = user.get("activity_workout", 0)
-        return update_user(telegram_id, activity_steps=curr_steps + steps, activity_workout=curr_workout + workout)
+        return update_user(telegram_id, activity_steps=curr_steps + steps)
     return None
 
 def save_reflection(telegram_id: int, mood: str):
     try:
         data = {
             "telegram_id": telegram_id,
-            "mood": mood,
-            "date": datetime.now(timezone.utc).isoformat()
+            "mood": mood
         }
         response = supabase.table("reflections").insert(data).execute()
         return response.data
@@ -145,7 +138,7 @@ def get_streak(telegram_id: int):
     return 1
 
 def pause_mode(telegram_id: int, reason: str = None):
-    return update_user(telegram_id, pause_mode=True, pause_reason=reason)
+    return update_user(telegram_id, pause_mode=True)
 
 def resume_mode(telegram_id: int):
-    return update_user(telegram_id, pause_mode=False, pause_reason=None)
+    return update_user(telegram_id, pause_mode=False)
