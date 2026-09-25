@@ -169,7 +169,8 @@ def kb_main_menu(mode: str = "alfard"):
 
 # --- HANDLERS: ONBOARDING ---
 @dp.message(CommandStart())
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     text = (
         "✨ <b>Амаль 365</b>\n\n"
@@ -194,7 +195,7 @@ async def onboard_lang(callback: CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Выберите язык / Choose language:", reply_markup=kb_languages(), parse_mode="HTML")
     await callback.answer()
 
-@dp.callback_query(OnboardingStates.waiting_for_language, F.data.startswith("lang_"))
+@dp.callback_query(F.data.startswith("lang_"))
 async def process_lang(callback: CallbackQuery, state: FSMContext):
     lang = callback.data.split("_")[1]
     update_user(callback.from_user.id, language=lang)
@@ -217,8 +218,8 @@ async def process_city(message: Message, state: FSMContext):
     )
     await message.answer(text, reply_markup=kb_modes(), parse_mode="HTML")
 
-@dp.callback_query(OnboardingStates.waiting_for_mode, F.data.startswith("mode_"))
-async def process_mode(callback: CallbackQuery, state: FSMContext):
+@dp.callback_query(F.data.startswith("mode_"))
+async def process_mode_callback(callback: CallbackQuery, state: FSMContext):
     mode_map = {
         "mode_alfard": "alfard",
         "mode_alistikama": "alistikama",
@@ -233,6 +234,24 @@ async def process_mode(callback: CallbackQuery, state: FSMContext):
     text = "Альхамдулиллях! Регистрация завершена. Ваш путь начался 🤍"
     await callback.message.edit_text(text, reply_markup=kb_main_menu(user.get("mode", "alfard")), parse_mode="HTML")
     await callback.answer()
+
+@dp.message(OnboardingStates.waiting_for_mode)
+async def process_mode_text(message: Message, state: FSMContext):
+    text_lower = message.text.lower()
+    mode = "alfard"
+    if "истикама" in text_lower:
+        mode = "alistikama"
+    elif "тазкия" in text_lower:
+        mode = "attazkiya"
+    elif "ихсан" in text_lower:
+        mode = "alihsan"
+
+    update_user(message.from_user.id, mode=mode, current_level=mode)
+    await state.clear()
+    
+    user = get_user(message.from_user.id)
+    text = "Альхамдулиллях! Регистрация завершена. Ваш путь начался 🤍"
+    await message.answer(text, reply_markup=kb_main_menu(user.get("mode", "alfard")), parse_mode="HTML")
 
 # --- MAIN MENU & SECTIONS ---
 @dp.callback_query(F.data == "go_to_main")
