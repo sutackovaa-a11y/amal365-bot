@@ -5,7 +5,7 @@ import os
 import sys
 import random
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import CommandStart
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
@@ -18,7 +18,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from database import (
     create_user, get_user, update_user, save_prayer,
     save_adhkar, save_tasbih, save_quran, save_books,
-    save_activity, save_reflection, get_stats, pause_mode, resume_mode
+    save_activity, save_reflection, get_stats, pause_mode, resume_mode,
+    get_all_active_users
 )
 
 load_dotenv()
@@ -53,27 +54,33 @@ class ActivityStates(StatesGroup):
 HADITHS = {
     "Фаджр": [
         "Два раката Фаджра лучше мира и всего, что в нём. (Муслим)",
-        "Тот, кто совершил утренний намаз, находится под защитой Аллаха. (Муслим)"
+        "Тот, кто совершил утренний намаз, находится под защитой Аллаха. (Муслим)",
+        "Ангелы ночи и дня сменяют друг друга во время утреннего и предвечернего намазов. (Бухари)"
     ],
     "Зухр": [
         "Поистине, врата небес открываются перед полуденным намазом. (Тирмизи)",
-        "Совершайте намаз вовремя — это самое любимое деяние Аллаха. (Бухари)"
+        "Совершайте намаз вовремя — это самое любимое деяние Аллаха. (Бухари)",
+        "Тот, кто бережёт четыре раката до Зухра и четыре после, защищен от огня. (Абу Дауд)"
     ],
     "Аср": [
         "Тот, кто совершит намазы в прохладное время суток (Фаджр и Аср), войдёт в Рай. (Бухари)",
-        "Не пропускайте предсказанный и благословенный предвечерний намаз."
+        "Не пропускайте предсказанный и благословенный предвечерний намаз.",
+        "Тот, у кого пропадет Аср-намаз, словно лишился семьи и имущества. (Бухари)"
     ],
     "Магриб": [
         "Спешите совершить вечерний намаз до того, как появятся яркие звезды. (Абу Дауд)",
-        "Магриб — время завершения дня в поминании Всевышнего."
+        "Магриб — время завершения дня в поминании Всевышнего.",
+        "Мольба между Азаном и Икамой не отвергается."
     ],
     "Иша": [
         "Тот, кто совершил ночной намаз (Иша) с коллективом, словно выстаивал половину ночи. (Муслим)",
-        "Иша дарует сердцу покой перед ночным отдыхом."
+        "Иша дарует сердцу покой перед ночным отдыхом.",
+        "Тяжелее всего лицемерам совершать Фаджр и Иша. (Бухари)"
     ],
     "Тахаджуд": [
         "Лучший намаз после обязательных — это ночной намаз. (Муслим)",
-        "Господь наш нисходит каждую ночь к небесам ближним... (Бухари)"
+        "Господь наш нисходит каждую ночь к небесам ближним в последнюю треть ночи... (Бухари)",
+        "Выстаивайте ночную молитву, ибо это путь праведников до вас. (Тирмизи)"
     ]
 }
 
@@ -82,7 +89,7 @@ COMPANION_STORIES = [
     "2. Умар ибн аль-Хаттаб — символ справедливости, силы и твердости веры.",
     "3. Усман ибн Аффан — обладатель двух светочей, щедрейший благотворитель и собиратель Корана.",
     "4. Али ибн Абу Талиб — врата знаний, храбрости и преданности с юных лет.",
-    "5. Билал ибн Рабах — муэдзин Посланника Аллаха ﷺ, выдержавший жесточайшие пытки ради توحيد (единобожия).",
+    "5. Билал ибн Рабах — муэдзин Посланника Аллаха ﷺ, выдержавший жесточайшие пытки ради единобожия.",
     "6. Му‘аз ибн Джабаль — сподвижник, которого Пророк ﷺ назвал лучшим знатоком дозволенного и запретного.",
     "7. Халид ибн аль-Валид — меч Аллаха разящий, великий полководец, принявший ислам сердцем.",
     "8. Са‘д ибн Абу Вакасс — сподвижник, чьи мольбы всегда принимались Всевышним.",
@@ -124,6 +131,25 @@ def get_prayer_times(city: str):
     except Exception as e:
         print(f"Error fetching prayer times: {e}")
     return {"Фаджр": "05:00", "Зухр": "13:00", "Аср": "16:30", "Магриб": "19:00", "Иша": "20:30"}
+
+def calculate_time_left(target_time_str: str) -> str:
+    try:
+        now = datetime.now(timezone.utc)
+        now_time = now.time()
+        t_parts = target_time_str.split(":")
+        target_hour = int(t_parts[0])
+        target_minute = int(t_parts[1])
+        
+        target_dt = datetime.combine(now.date(), datetime.min.time(), tzinfo=timezone.utc).replace(hour=target_hour, minute=target_minute)
+        if target_dt < now:
+            target_dt += timedelta(days=1)
+            
+        diff = target_dt - now
+        hours = int(diff.seconds // 3600)
+        minutes = int((diff.seconds % 3600) // 60)
+        return f"{hours} ч. {minutes} мин."
+    except Exception:
+        return "несколько часов"
 
 # --- KEYBOARDS ---
 def kb_onboard_start():
@@ -220,38 +246,48 @@ async def process_city(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("mode_"))
 async def process_mode_callback(callback: CallbackQuery, state: FSMContext):
-    mode_map = {
-        "mode_alfard": "alfard",
-        "mode_alistikama": "alistikama",
-        "mode_attazkiya": "attazkiya",
-        "mode_alihsan": "alihsan"
-    }
-    selected_mode = mode_map.get(callback.data, "alfard")
-    update_user(callback.from_user.id, mode=selected_mode, current_level=selected_mode)
-    await state.clear()
-    
-    user = get_user(callback.from_user.id)
-    text = "Альхамдулиллях! Регистрация завершена. Ваш путь начался 🤍"
-    await callback.message.edit_text(text, reply_markup=kb_main_menu(user.get("mode", "alfard")), parse_mode="HTML")
-    await callback.answer()
+    try:
+        mode_map = {
+            "mode_alfard": "alfard",
+            "mode_alistikama": "alistikama",
+            "mode_attazkiya": "attazkiya",
+            "mode_alihsan": "alihsan"
+        }
+        selected_mode = mode_map.get(callback.data, "alfard")
+        update_user(callback.from_user.id, mode=selected_mode, current_level=selected_mode)
+        await state.clear()
+        
+        user = get_user(callback.from_user.id)
+        user_mode = user.get("mode", "alfard") if user else selected_mode
+        text = "Альхамдулиллях! Регистрация завершена. Ваш путь начался 🤍"
+        await callback.message.edit_text(text, reply_markup=kb_main_menu(user_mode), parse_mode="HTML")
+        await callback.answer()
+    except Exception as e:
+        print(f"Error in process_mode_callback: {e}")
+        await callback.message.answer("Произошла ошибка при сохранении режима. Пожалуйста, попробуйте еще раз.")
 
 @dp.message(OnboardingStates.waiting_for_mode)
 async def process_mode_text(message: Message, state: FSMContext):
-    text_lower = message.text.lower()
-    mode = "alfard"
-    if "истикама" in text_lower:
-        mode = "alistikama"
-    elif "тазкия" in text_lower:
-        mode = "attazkiya"
-    elif "ихсан" in text_lower:
-        mode = "alihsan"
+    try:
+        text_lower = message.text.lower()
+        mode = "alfard"
+        if "истикама" in text_lower:
+            mode = "alistikama"
+        elif "тазкия" in text_lower:
+            mode = "attazkiya"
+        elif "ихсан" in text_lower:
+            mode = "alihsan"
 
-    update_user(message.from_user.id, mode=mode, current_level=mode)
-    await state.clear()
-    
-    user = get_user(message.from_user.id)
-    text = "Альхамдулиллях! Регистрация завершена. Ваш путь начался 🤍"
-    await message.answer(text, reply_markup=kb_main_menu(user.get("mode", "alfard")), parse_mode="HTML")
+        update_user(message.from_user.id, mode=mode, current_level=mode)
+        await state.clear()
+        
+        user = get_user(message.from_user.id)
+        user_mode = user.get("mode", "alfard") if user else mode
+        text = "Альхамдулиллях! Регистрация завершена. Ваш путь начался 🤍"
+        await message.answer(text, reply_markup=kb_main_menu(user_mode), parse_mode="HTML")
+    except Exception as e:
+        print(f"Error in process_mode_text: {e}")
+        await message.answer("Произошла ошибка при сохранении режима. Пожалуйста, попробуйте еще раз.")
 
 # --- MAIN MENU & SECTIONS ---
 @dp.callback_query(F.data == "go_to_main")
@@ -317,10 +353,27 @@ async def mark_prayer_action(callback: CallbackQuery):
     prayer_name = callback.data.split("_")[2]
     save_prayer(callback.from_user.id, prayer_name)
     hadith = get_random_hadith(prayer_name)
+    user = get_user(callback.from_user.id)
+    city = user.get("city", "Москва") if user else "Москва"
+    times = get_prayer_times(city)
+    
+    next_time = times.get("Зухр", "13:00")
+    if prayer_name == "Зухр":
+        next_time = times.get("Аср", "16:30")
+    elif prayer_name == "Аср":
+        next_time = times.get("Магриб", "19:00")
+    elif prayer_name == "Магриб":
+        next_time = times.get("Иша", "20:30")
+    elif prayer_name == "Иша":
+        next_time = times.get("Фаджр", "05:00")
+        
+    time_left = calculate_time_left(next_time)
+    
     text = (
         f"МашаАллах 🤍\n\n"
         f"Пусть Аллах примет Ваш намаз: <b>{prayer_name}</b>.\n\n"
-        f"📖 <i>{hadith}</i>"
+        f"📖 <i>{hadith}</i>\n\n"
+        f"До следующего намаза осталось примерно: <b>{time_left}</b>."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🕌 К намазам", callback_data="menu_prayers")],
@@ -331,7 +384,7 @@ async def mark_prayer_action(callback: CallbackQuery):
 
 # --- TASBIH ---
 @dp.callback_query(F.data == "menu_tasbih")
-async def menu_tasbih(callback: CallbackQuery, state: FSMContext):
+async def menu_tasbih(callback: CallbackQuery):
     text = (
         "📿 <b>Тасбих и Салават</b>\n\n"
         "Выберите желаемую цель для поминания:"
@@ -355,7 +408,7 @@ async def tasbih_target_selected(callback: CallbackQuery):
         "Нажимайте на кнопку ниже, чтобы считать:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Сделать зикр (0 / " + str(target) + ")", callback_data=f"t_count_{target}_0")],
+        [InlineKeyboardButton(text=f"➕ Сделать зикр (0 / {target})", callback_data=f"t_count_{target}_0")],
         [InlineKeyboardButton(text="⬅️ В меню", callback_data="go_to_main")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
@@ -541,9 +594,121 @@ async def toggle_pause(callback: CallbackQuery):
     await callback.message.edit_text(msg, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
+# --- EVENING REFLECTION HANDLERS ---
+@dp.callback_query(F.data.startswith("mood_"))
+async def process_mood(callback: CallbackQuery):
+    mood = callback.data.split("_")[1]
+    save_reflection(callback.from_user.id, mood)
+    text = "Альхамдулиллях за каждый прожитый день. Пусть Аллах дарует вам благословенную ночь 🤍"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌙 В меню", callback_data="go_to_main")]])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer("Спасибо за ответ!")
+
+# --- ADAPTIVE GROWTH & INACTIVITY TASKS ---
+async def check_adaptive_milestones():
+    users = get_all_active_users()
+    for user in users:
+        streak = user.get("streak_days", 1)
+        level = user.get("current_level", "alfard")
+        telegram_id = user.get("telegram_id")
+        
+        if streak == 40 and level == "alfard":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➡️ Перейти на Истикама", callback_data="upgrade_alistikama")],
+                [InlineKeyboardButton(text="🕊 Остаться здесь", callback_data="stay_here")]
+            ])
+            try:
+                await bot.send_message(telegram_id, "МашаАллах. Вы сохраняете постоянство уже 40 дней.\nЕсли чувствуете готовность, можете перейти на уровень: <b>Аль-Истикама</b>.", reply_markup=kb, parse_mode="HTML")
+            except Exception as e:
+                print(f"Error sending milestone message: {e}")
+        elif streak == 90 and level == "alistikama":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➡️ Перейти на Ат-Тазкия", callback_data="upgrade_attazkiya")],
+                [InlineKeyboardButton(text="🕊 Остаться здесь", callback_data="stay_here")]
+            ])
+            try:
+                await bot.send_message(telegram_id, "МашаАллах. Вы уже 90 дней на пути постоянства.\nПредлагаем перейти на уровень очищения души: <b>Ат-Тазкия</b>.", reply_markup=kb, parse_mode="HTML")
+            except Exception as e:
+                print(f"Error sending milestone message: {e}")
+        elif streak == 365 and level == "attazkiya":
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➡️ Перейти на Аль-Ихсан", callback_data="upgrade_alihsan")],
+                [InlineKeyboardButton(text="🕊 Остаться здесь", callback_data="stay_here")]
+            ])
+            try:
+                await bot.send_message(telegram_id, "МашаАллах! Целый год вместе. Вы достигли вершины.\nПредлагаем перейти на уровень: <b>Аль-Ихсан</b>.", reply_markup=kb, parse_mode="HTML")
+            except Exception as e:
+                print(f"Error sending milestone message: {e}")
+
+@dp.callback_query(F.data.startswith("upgrade_"))
+async def upgrade_mode(callback: CallbackQuery):
+    new_mode = callback.data.split("_")[1]
+    update_user(callback.from_user.id, mode=new_mode, current_level=new_mode)
+    text = f"Поздравляем! Ваш режим успешно изменен на <b>{new_mode.upper()}</b> 🤍"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌙 В меню", callback_data="go_to_main")]])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+@dp.callback_query(F.data == "stay_here")
+async def stay_mode(callback: CallbackQuery):
+    text = "Хорошо, продолжайте в вашем комфортном темпе 🤍"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌙 В меню", callback_data="go_to_main")]])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+async def check_inactivity():
+    users = get_all_active_users()
+    now = datetime.now(timezone.utc)
+    for user in users:
+        last_active_str = user.get("last_active")
+        if last_active_str:
+            try:
+                last_active = datetime.fromisoformat(last_active_str)
+                if (now - last_active) > timedelta(days=3):
+                    telegram_id = user.get("telegram_id")
+                    kb = InlineKeyboardMarkup(inline_keyboard=[
+                        [InlineKeyboardButton(text="🌿 Не было времени", callback_data="inact_time")],
+                        [InlineKeyboardButton(text="😔 Было тяжело", callback_data="inact_hard")],
+                        [InlineKeyboardButton(text="🤲 Нужна пауза", callback_data="inact_pause")],
+                        [InlineKeyboardButton(text="❤️ Просто вернуться", callback_data="go_to_main")]
+                    ])
+                    await bot.send_message(telegram_id, "Ассаляму алейкум.\nМы заметили, что Вас давно не было. Надеемся, что у Вас всё хорошо.\nХотите рассказать, что стало причиной паузы?", reply_markup=kb, parse_mode="HTML")
+            except Exception as e:
+                print(f"Error checking inactivity: {e}")
+
+@dp.callback_query(F.data.startswith("inact_"))
+async def process_inactivity_response(callback: CallbackQuery):
+    reason = callback.data.split("_")[1]
+    reasons_map = {
+        "time": "Не было времени",
+        "hard": "Было тяжело",
+        "pause": "Нужна пауза"
+    }
+    if reason in reasons_map:
+        pause_mode(callback.from_user.id, reason=reasons_map[reason])
+    text = "Мы всегда рядом и ждем вас в любое время. Пусть всё у вас складывается наилучшим образом 🤍"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌙 В меню", callback_data="go_to_main")]])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+# --- EVENING REFLECTION TRIGGER JOB ---
+async def send_evening_reflections():
+    users = get_all_active_users()
+    for user in users:
+        telegram_id = user.get("telegram_id")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="😊 Хорошо", callback_data="mood_good"),
+             InlineKeyboardButton(text="😐 Обычно", callback_data="mood_normal")],
+            [InlineKeyboardButton(text="😔 Тяжело", callback_data="mood_hard")]
+        ])
+        try:
+            await bot.send_message(telegram_id, "Как прошёл Ваш сегодняшний день?", reply_markup=kb, parse_mode="HTML")
+        except Exception as e:
+            print(f"Error sending reflection trigger: {e}")
+
 # --- WEB SERVER FOR RENDER ---
 async def handle(request):
-    return web.Response(text="Amal365 Bot is running successfully!")
+    return web.Response(text="Amal365 Production Bot is running successfully!")
 
 async def run_web_server():
     app = web.Application()
@@ -555,8 +720,13 @@ async def run_web_server():
 
 async def main():
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-    print("Запуск бота Amal365...")
+    print("Запуск бота Amal365 в продакшн-режиме...")
+    
+    scheduler.add_job(check_adaptive_milestones, "cron", hour=9, minute=0)
+    scheduler.add_job(check_inactivity, "cron", hour=10, minute=0)
+    scheduler.add_job(send_evening_reflections, "cron", hour=21, minute=0)
     scheduler.start()
+    
     await asyncio.gather(
         run_web_server(),
         dp.start_polling(bot, drop_pending_updates=True)
