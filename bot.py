@@ -38,6 +38,9 @@ class OnboardingStates(StatesGroup):
     waiting_for_city = State()
     waiting_for_mode = State()
 
+class SettingsStates(StatesGroup):
+    waiting_for_new_city = State()
+
 class TasbihStates(StatesGroup):
     choosing_target = State()
     counting = State()
@@ -135,7 +138,6 @@ def get_prayer_times(city: str):
 def calculate_time_left(target_time_str: str) -> str:
     try:
         now = datetime.now(timezone.utc)
-        now_time = now.time()
         t_parts = target_time_str.split(":")
         target_hour = int(t_parts[0])
         target_minute = int(t_parts[1])
@@ -150,6 +152,22 @@ def calculate_time_left(target_time_str: str) -> str:
         return f"{hours} ч. {minutes} мин."
     except Exception:
         return "несколько часов"
+
+def get_next_prayer_info(times: dict):
+    now = datetime.now(timezone.utc).time()
+    prayer_order = [("Фаджр", times["Фаджр"]), ("Зухр", times["Зухр"]), ("Аср", times["Аср"]), ("Магриб", times["Магриб"]), ("Иша", times["Иша"])]
+    
+    for name, t_str in prayer_order:
+        try:
+            parts = t_str.split(":")
+            t_obj = datetime.strptime(f"{parts[0]}:{parts[1]}", "%H:%M").time()
+            if now < t_obj:
+                time_left = calculate_time_left(t_str)
+                return name, t_str, time_left
+        except Exception:
+            continue
+    # Если все прошли, то следующий Фаджр завтра
+    return "Фаджр", times["Фаджр"], calculate_time_left(times["Фаджр"])
 
 # --- KEYBOARDS ---
 def kb_onboard_start():
@@ -236,6 +254,7 @@ async def process_city(message: Message, state: FSMContext):
     update_user(message.from_user.id, city=city)
     await state.set_state(OnboardingStates.waiting_for_mode)
     text = (
+        f"Город <b>{city}</b> успешно сохранен! 📍\n\n"
         "<b>Выберите режим развития:</b>\n\n"
         "🌱 <b>Аль-Фард (Обязательное)</b> — 5 намазов, салават, зикр.\n"
         "🌿 <b>Аль-Истикама (Постоянство)</b> — 5 намазов, тахаджуд, салават, зикр.\n"
@@ -291,7 +310,8 @@ async def process_mode_text(message: Message, state: FSMContext):
 
 # --- MAIN MENU & SECTIONS ---
 @dp.callback_query(F.data == "go_to_main")
-async def go_to_main(callback: CallbackQuery):
+async def go_to_main(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
     user = get_user(callback.from_user.id)
     mode = user.get("mode", "alfard") if user else "alfard"
     streak = user.get("streak_days", 1) if user else 1
@@ -320,6 +340,8 @@ async def menu_prayers(callback: CallbackQuery):
     city = user.get("city", "Москва") if user else "Москва"
     times = get_prayer_times(city)
     
+    next_name, next_t, time_left = get_next_prayer_info(times)
+    
     fajr = "✓" if user and user.get("fajr_done") else "⏳"
     dhuhr = "✓" if user and user.get("dhuhr_done") else "⏳"
     asr = "✓" if user and user.get("asr_done") else "⏳"
@@ -334,7 +356,8 @@ async def menu_prayers(callback: CallbackQuery):
         f"عصر Аср ({times['Аср']}) — {asr}\n"
         f"🌇 Магриб ({times['Магриб']}) — {maghrib}\n"
         f"🌙 Иша ({times['Иша']}) — {isha}\n"
-        f"🌌 Тахаджуд — {tahajjud}"
+        f"🌌 Тахаджуд — {tahajjud}\n\n"
+        f"⏳ <b>До намаза ({next_name}) осталось:</b> {time_left}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Фаджр", callback_data="mark_p_Фаджр"),
@@ -357,17 +380,7 @@ async def mark_prayer_action(callback: CallbackQuery):
     city = user.get("city", "Москва") if user else "Москва"
     times = get_prayer_times(city)
     
-    next_time = times.get("Зухр", "13:00")
-    if prayer_name == "Зухр":
-        next_time = times.get("Аср", "16:30")
-    elif prayer_name == "Аср":
-        next_time = times.get("Магриб", "19:00")
-    elif prayer_name == "Магриб":
-        next_time = times.get("Иша", "20:30")
-    elif prayer_name == "Иша":
-        next_time = times.get("Фаджр", "05:00")
-        
-    time_left = calculate_time_left(next_time)
+    _, _, time_left = get_next_prayer_info(times)
     
     text = (
         f"МашаАллах 🤍\n\n"
@@ -561,23 +574,46 @@ async def menu_path(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
 
-# --- SETTINGS & PAUSE ---
+# --- SETTINGS & PAUSE & CITY CHANGE ---
 @dp.callback_query(F.data == "menu_settings")
 async def menu_settings(callback: CallbackQuery):
     user = get_user(callback.from_user.id)
     paused = user.get("pause_mode", False) if user else False
+    city = user.get("city", "Москва") if user else "Москва"
     pause_text = "🟢 Активен" if not paused else "🌷 На паузе"
     
     text = (
         f"⚙️ <b>Настройки</b>\n\n"
+        f"📍 Город: <b>{city}</b>\n"
         f"Статус: {pause_text}"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📍 Изменить город", callback_data="settings_change_city")],
         [InlineKeyboardButton(text="🌷 Включить деликатную паузу" if not paused else "🌿 Выключить паузу", callback_data="toggle_pause")],
         [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="go_to_main")]
     ])
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
     await callback.answer()
+
+@dp.callback_query(F.data == "settings_change_city")
+async def settings_change_city(callback: CallbackQuery, state: FSMContext):
+    await state.set_state(SettingsStates.waiting_for_new_city)
+    text = "📍 Напишите новый город текстом (например: <i>Нерюнгри, Санкт-Петербург, Казань</i>):"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад в настройки", callback_data="menu_settings")]])
+    await callback.message.edit_text(text, reply_markup=kb, parse_mode="HTML")
+    await callback.answer()
+
+@dp.message(SettingsStates.waiting_for_new_city)
+async def process_new_city(message: Message, state: FSMContext):
+    new_city = message.text.strip()
+    update_user(message.from_user.id, city=new_city)
+    await state.clear()
+    
+    user = get_user(message.from_user.id)
+    mode = user.get("mode", "alfard") if user else "alfard"
+    text = f"Альхамдулиллях! Город успешно изменен на <b>{new_city}</b> 🤍"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🌙 В меню", callback_data="go_to_main")]])
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data == "toggle_pause")
 async def toggle_pause(callback: CallbackQuery):
