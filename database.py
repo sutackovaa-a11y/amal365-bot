@@ -7,25 +7,42 @@ load_dotenv()
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
+# Инициализация клиента Supabase
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def save_or_update_user(telegram_id: int, full_name: str, city: str = None, mode: str = None):
-    """Сохраняет или обновляет данные пользователя в таблице users"""
-    data = {
-        "telegram_id": telegram_id,
-        "full_name": full_name,
-    }
-    if city:
-        data["city"] = city
-    if mode:
-        data["spiritual_mode"] = mode
+def save_or_update_user(user_id: int, full_name: str, mode: str = None, city: str = None):
+    """Сохраняет нового пользователя или обновляет его данные (этап, город)."""
+    try:
+        response = supabase.table("users").select("*").eq("user_id", user_id).execute()
+        
+        if not response.data:
+            # Создаем нового пользователя
+            user_data = {
+                "user_id": user_id,
+                "full_name": full_name,
+                "spiritual_mode": mode or "alfard",
+                "city": city or "Не указан",
+                "streak": 1
+            }
+            supabase.table("users").insert(user_data).execute()
+        else:
+            # Обновляем существующие данные при необходимости
+            update_data = {}
+            if mode:
+                update_data["spiritual_mode"] = mode
+            if city:
+                update_data["city"] = city
+            if update_data:
+                supabase.table("users").update(update_data).eq("user_id", user_id).execute()
+    except Exception as e:
+        print(f"Ошибка базы данных (save_or_update_user): {e}")
 
-    response = supabase.table("users").upsert(data, on_conflict="telegram_id").execute()
-    return response
-
-def get_user(telegram_id: int):
-    """Получает данные пользователя"""
-    response = supabase.table("users").select("*").eq("telegram_id", telegram_id).execute()
-    if response.data:
-        return response.data[0]
+def get_user(user_id: int):
+    """Получает данные пользователя из базы."""
+    try:
+        response = supabase.table("users").select("*").eq("user_id", user_id).execute()
+        if response.data:
+            return response.data[0]
+    except Exception as e:
+        print(f"Ошибка базы данных (get_user): {e}")
     return None
