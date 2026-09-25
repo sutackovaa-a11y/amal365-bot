@@ -353,7 +353,7 @@ async def menu_prayers(callback: CallbackQuery):
         f"⏰ <b>Время намаза ({city})</b>\n\n"
         f"🌅 Фаджр ({times['Фаджр']}) — {fajr}\n"
         f"☀️ Зухр ({times['Зухр']}) — {dhuhr}\n"
-        f"عصر Аср ({times['Аср']}) — {asr}\n"
+        f"💧 Аср ({times['Аср']}) — {asr}\n"
         f"🌇 Магриб ({times['Магриб']}) — {maghrib}\n"
         f"🌙 Иша ({times['Иша']}) — {isha}\n"
         f"🌌 Тахаджуд — {tahajjud}\n\n"
