@@ -23,21 +23,27 @@ def create_user(telegram_id: int, username: str = None, first_name: str = None):
                 "username": username,
                 "first_name": first_name,
                 "language": "ru",
-                "city": "Не указан",
+                "city": "Москва",
                 "mode": "alfard",
                 "current_level": "alfard",
                 "streak_days": 1,
                 "pause_mode": False,
+                "pause_reason": None,
                 "fajr_done": False,
                 "dhuhr_done": False,
                 "asr_done": False,
                 "maghrib_done": False,
                 "isha_done": False,
                 "tahajjud_done": False,
+                "morning_adhkar_done": False,
+                "evening_adhkar_done": False,
                 "tasbih_count": 0,
                 "quran_pages": 0,
                 "books_pages": 0,
-                "activity_steps": 0
+                "activity_steps": 0,
+                "activity_workout": 0,
+                "last_active": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat()
             }
             response = supabase.table("users").insert(user_data).execute()
             return response.data
@@ -57,6 +63,7 @@ def get_user(telegram_id: int):
 
 def update_user(telegram_id: int, **kwargs):
     try:
+        kwargs["last_active"] = datetime.now(timezone.utc).isoformat()
         response = supabase.table("users").update(kwargs).eq("telegram_id", telegram_id).execute()
         return response.data
     except Exception as e:
@@ -85,7 +92,8 @@ def save_prayer(telegram_id: int, prayer_name: str):
 def save_adhkar(telegram_id: int, adhkar_type: str):
     user = get_user(telegram_id)
     if user:
-        return user
+        field = f"{adhkar_type}_adhkar_done"
+        return update_user(telegram_id, **{field: True})
     return None
 
 def save_tasbih(telegram_id: int, count: int):
@@ -113,14 +121,16 @@ def save_activity(telegram_id: int, steps: int = 0, workout: int = 0):
     user = get_user(telegram_id)
     if user:
         curr_steps = user.get("activity_steps", 0)
-        return update_user(telegram_id, activity_steps=curr_steps + steps)
+        curr_workout = user.get("activity_workout", 0)
+        return update_user(telegram_id, activity_steps=curr_steps + steps, activity_workout=curr_workout + workout)
     return None
 
 def save_reflection(telegram_id: int, mood: str):
     try:
         data = {
             "telegram_id": telegram_id,
-            "mood": mood
+            "mood": mood,
+            "date": datetime.now(timezone.utc).isoformat()
         }
         response = supabase.table("reflections").insert(data).execute()
         return response.data
@@ -138,7 +148,15 @@ def get_streak(telegram_id: int):
     return 1
 
 def pause_mode(telegram_id: int, reason: str = None):
-    return update_user(telegram_id, pause_mode=True)
+    return update_user(telegram_id, pause_mode=True, pause_reason=reason)
 
 def resume_mode(telegram_id: int):
-    return update_user(telegram_id, pause_mode=False)
+    return update_user(telegram_id, pause_mode=False, pause_reason=None)
+
+def get_all_active_users():
+    try:
+        response = supabase.table("users").select("*").eq("pause_mode", False).execute()
+        return response.data if response.data else []
+    except Exception as e:
+        print(f"Error getting active users: {e}")
+        return []
