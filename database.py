@@ -31,7 +31,7 @@ def get_user_local_date(user: Dict[str, Any]) -> str:
 
 
 def create_user(telegram_id: int, username: Optional[str] = None, first_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Создает пользователя с пустыми city и timezone (требуется онбординг)."""
+    """Создает пользователя в базе данных."""
     try:
         existing = get_user(telegram_id)
         if not existing:
@@ -179,12 +179,7 @@ def check_and_bump_streak(telegram_id: int) -> None:
             yesterday_prog = None
             
         had_activity_yesterday = has_activity(yesterday_prog)
-        
-        if had_activity_yesterday:
-            new_streak = current_streak + 1
-        else:
-            new_streak = 1
-            
+        new_streak = (current_streak + 1) if had_activity_yesterday else 1
         update_user(telegram_id, streak_days=new_streak)
 
 
