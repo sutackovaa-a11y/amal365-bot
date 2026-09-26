@@ -49,6 +49,24 @@ class ReflectionState(StatesGroup):
 class SettingsState(StatesGroup):
     waiting_for_city = State()
 
+# Справочник точных таймзон для городов на кириллице, чтобы не зависеть от API Aladhan
+CITY_TIMEZONES = {
+    "нерюнгри": "Asia/Yakutsk",
+    "якутск": "Asia/Yakutsk",
+    "москва": "Europe/Moscow",
+    "санкт-петербург": "Europe/Moscow",
+    "казань": "Europe/Moscow",
+    "уфа": "Asia/Yekaterinburg",
+    "екатеринбург": "Asia/Yekaterinburg",
+    "новосибирск": "Asia/Novosibirsk",
+    "алматы": "Asia/Almaty",
+    "астана": "Asia/Almaty",
+    "бишкек": "Asia/Bishkek",
+    "ташкент": "Asia/Tashkent",
+    "грозный": "Europe/Moscow",
+    "махачкала": "Europe/Moscow"
+}
+
 STORIES = [
     "История Абу Бакра (да будет доволен им Аллах): его щедрость не знала границ, он отдал всё своё имущество на пути Аллаха.",
     "История Умара ибн аль-Хаттаба (да будет доволен им Аллах): пример справедливости, силы духа и заботы об умме.",
@@ -200,33 +218,36 @@ async def onboard_city(callback: types.CallbackQuery, state: FSMContext) -> None
     reset_inactivity_flag(callback.from_user.id)
     lang = callback.data.split("_")[1]
     update_user(callback.from_user.id, language=lang)
-    await callback.message.edit_text("Введите ваш город (например, Алматы, Бишкек, Ташкент, Москва):")
+    await callback.message.edit_text("Введите ваш город (например, Нерюнгри, Москва, Алматы, Бишкек):")
     await state.set_state(OnboardingState.waiting_for_city)
     await callback.answer()
 
 
 @dp.message(OnboardingState.waiting_for_city)
 async def process_city(message: types.Message, state: FSMContext) -> None:
-    city = message.text.strip()
-    today_str = datetime.now(timezone.utc).strftime("%d-%m-%Y")
-    url = f"https://api.aladhan.com/v1/timingsByCity/{today_str}?city={city}&country=&method=3"
+    city_raw = message.text.strip()
+    city_lower = city_raw.lower()
     
-    tz_str = None
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    meta = data.get("data", {}).get("meta", {})
-                    tz_str = meta.get("timezone")
-    except Exception as e:
-        logging.error(f"Validation error for city {city}: {e}")
+    tz_str = CITY_TIMEZONES.get(city_lower)
+    
+    if not tz_str:
+        today_str = datetime.now(timezone.utc).strftime("%d-%m-%Y")
+        url = f"https://api.aladhan.com/v1/timingsByCity/{today_str}?city={city_raw}&country=&method=3"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        meta = data.get("data", {}).get("meta", {})
+                        tz_str = meta.get("timezone")
+        except Exception as e:
+            logging.error(f"Validation error for city {city_raw}: {e}")
 
     if not tz_str:
-        await message.answer("Не удалось определить часовой пояс для этого города. Проверьте правильность написания и введите город снова:")
+        await message.answer("Не удалось определить часовой пояс для этого города. Проверьте правильность написания или введите город на английском (например, Neryungri):")
         return
 
-    update_user(message.from_user.id, city=city, timezone=tz_str)
+    update_user(message.from_user.id, city=city_raw, timezone=tz_str)
     reset_inactivity_flag(message.from_user.id)
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -236,7 +257,7 @@ async def process_city(message: types.Message, state: FSMContext) -> None:
         [InlineKeyboardButton(text="🌟 Аль-Ихсан (Совершенство)", callback_data="level_alihsan")]
     ])
     await message.answer(
-        f"Город сохранен: <b>{city}</b> (Часовой пояс: {tz_str}).\n\nВыберите ваш текущий духовный фокус (вы сможете изменить его в любой момент в настройках):",
+        f"Город сохранен: <b>{city_raw}</b> (Часовой пояс: {tz_str}).\n\nВыберите ваш текущий духовный фокус:",
         reply_markup=kb, parse_mode="HTML"
     )
     await state.clear()
@@ -586,29 +607,32 @@ async def set_city_start(callback: types.CallbackQuery, state: FSMContext) -> No
 async def set_city_finish(message: types.Message, state: FSMContext) -> None:
     if not await ensure_onboarded_message(message):
         return
-    city = message.text.strip()
-    today_str = datetime.now(timezone.utc).strftime("%d-%m-%Y")
-    url = f"https://api.aladhan.com/v1/timingsByCity/{today_str}?city={city}&country=&method=3"
+    city_raw = message.text.strip()
+    city_lower = city_raw.lower()
     
-    tz_str = None
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    meta = data.get("data", {}).get("meta", {})
-                    tz_str = meta.get("timezone")
-    except Exception as e:
-        logging.error(f"Validation error for city {city}: {e}")
+    tz_str = CITY_TIMEZONES.get(city_lower)
+    
+    if not tz_str:
+        today_str = datetime.now(timezone.utc).strftime("%d-%m-%Y")
+        url = f"https://api.aladhan.com/v1/timingsByCity/{today_str}?city={city_raw}&country=&method=3"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        meta = data.get("data", {}).get("meta", {})
+                        tz_str = meta.get("timezone")
+        except Exception as e:
+            logging.error(f"Validation error for city {city_raw}: {e}")
 
     if not tz_str:
-        await message.answer("Не удалось определить часовой пояс для этого города. Введите корректное название:")
+        await message.answer("Не удалось определить часовой пояс. Введите корректное название:")
         return
 
-    update_user(message.from_user.id, city=city, timezone=tz_str)
+    update_user(message.from_user.id, city=city_raw, timezone=tz_str)
     reset_inactivity_flag(message.from_user.id)
     kb = get_main_menu_keyboard()
-    await message.answer(f"Город успешно изменен на: <b>{city}</b> (Часовой пояс: {tz_str})", reply_markup=kb, parse_mode="HTML")
+    await message.answer(f"Город успешно изменен на: <b>{city_raw}</b> (Часовой пояс: {tz_str})", reply_markup=kb, parse_mode="HTML")
     await state.clear()
 
 
@@ -689,7 +713,7 @@ async def mood_selected(callback: types.CallbackQuery) -> None:
 async def friday_kahf_done(callback: types.CallbackQuery) -> None:
     if not await ensure_onboarded_callback(callback):
         return
-    save_quran(callback.from_user.id, 10)  # Условное добавление за Аль-Кахф
+    save_quran(callback.from_user.id, 10)
     await callback.message.edit_text("МашаАллах! Пусть чтение суры Аль-Кахф принесет свет между двумя пятницами 🤍", reply_markup=get_main_menu_keyboard())
     await callback.answer("Принято!")
 
@@ -721,7 +745,8 @@ async def notif_prayer_done(callback: types.CallbackQuery) -> None:
         "dhuhr": "Зухр",
         "asr": "Аср",
         "maghrib": "Магриб",
-        "isha": "Иша"
+        "isha": "Иша",
+        "tahajjud": "Тахаджуд"
     }
     key = callback.data.split("_")[2]
     prayer_name = code_map.get(key, "Намаз")
@@ -756,7 +781,6 @@ async def check_inactivity() -> None:
 
 async def send_evening_reflections() -> None:
     users = get_all_active_users()
-    now_utc = datetime.now(timezone.utc)
     for user in users:
         tz_str = user.get("timezone")
         try:
@@ -765,7 +789,6 @@ async def send_evening_reflections() -> None:
             local_tz = timezone.utc
         now_local = datetime.now(local_tz)
         
-        # Если пятница вечер
         if now_local.weekday() == 4:
             try:
                 await bot.send_message(user.get("telegram_id"), "✨ <b>Благословенная пятница завершается.</b>\n\nПусть всё совершённое сегодня станет причиной довольства Аллаха и принесёт баракат в Вашу жизнь 🤍", parse_mode="HTML")
@@ -825,7 +848,6 @@ async def schedule_daily_prayer_notifications() -> None:
                 if prayer_utc_dt <= now_utc:
                     continue
                 
-                # Специальная бережная логика для пятницы после Фаджра
                 if is_friday and p_code == "fajr":
                     job_id_friday = f"friday_fajr_{telegram_id}"
                     friday_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -848,7 +870,6 @@ async def schedule_daily_prayer_notifications() -> None:
                         replace_existing=True
                     )
 
-                # Напоминание перед Джума (если Зухр в пятницу)
                 if is_friday and p_code == "dhuhr":
                     job_id_jumuah = f"friday_jumuah_{telegram_id}"
                     jumuah_kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -869,14 +890,12 @@ async def schedule_daily_prayer_notifications() -> None:
                         replace_existing=True
                     )
 
-                # Обычные напоминания с учетом уровня (фокуса сопровождения)
                 job_id_before = f"p_before_{telegram_id}_{p_code}"
                 kb_before = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text=f"✅ Отметить {p_name}", callback_data=f"notif_pr_{p_code}")]
                 ])
                 reminder_text = f"⏰ Скоро наступит время намаза: <b>{p_name}</b> (через 5 минут). Подготовьтесь к омовению."
                 
-                # Мягкие подсказки в зависимости от фокуса уровня
                 if level == "alistikama" and p_code == "fajr":
                     reminder_text += "\n🌿 *Аль-Истикама:* Постоянство — ключ к довольству Аллаха."
                 elif level == "attazkiya" and p_code == "asr":
@@ -906,7 +925,6 @@ async def schedule_daily_prayer_notifications() -> None:
                 logging.error(f"Error scheduling prayer notification for user {telegram_id}: {e}")
 
 
-# --- Веб-сервер на aiohttp для поддержки Web Service на Render ---
 async def handle_health(request):
     return web.Response(text="Amal365 Bot is running 🤍")
 
@@ -924,7 +942,6 @@ async def start_web_server():
 
 
 async def main() -> None:
-    # Запускаем веб-сервер, чтобы Render видел открытый порт
     await start_web_server()
 
     scheduler.add_job(check_inactivity, "cron", hour=10, minute=0)
