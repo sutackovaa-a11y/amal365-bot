@@ -1,228 +1,219 @@
 import os
 import logging
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+from typing import Any, Optional, Dict, List
 from dotenv import load_dotenv
-
-from database import (
-    create_user,
-    get_user,
-    update_user,
-    get_stats,
-    save_prayer,
-    save_quran
-)
+from supabase import create_client, Client
 
 load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Render автоматически передает порт, по умолчанию берем 8080
-PORT = int(os.getenv("PORT", 8080))
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# URL вашего приложения на Render (например: https://your-app.onrender.com)
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise ValueError("Supabase URL and Key must be set in environment variables.")
 
-WEBHOOK_PATH = f"/bot/{BOT_TOKEN}"
-WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не задан в переменных окружения (.env)")
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher()
+def get_user_local_date(user: Dict[str, Any]) -> str:
+    """Вычисляет локальную дату пользователя на основе его таймзоны."""
+    tz_str = user.get("timezone")
+    if not tz_str:
+        return datetime.now(timezone.utc).date().isoformat()
+    try:
+        local_tz = ZoneInfo(tz_str)
+    except Exception as e:
+        logging.error(f"Invalid timezone string '{tz_str}': {e}. Falling back to UTC.")
+        local_tz = timezone.utc
+    return datetime.now(local_tz).date().isoformat()
 
-logging.basicConfig(level=logging.INFO)
 
-def get_main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура главного меню."""
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="🕌 Намазы", callback_data="menu_prayers"),
-            InlineKeyboardButton(text="📊 Статистика", callback_data="menu_stats")
-        ]
-    ])
+def create_user(telegram_id: int, username: Optional[str] = None, first_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Создает или возвращает существующего пользователя."""
+    try:
+        existing = get_user(telegram_id)
+        if not existing:
+            user_data = {
+                "telegram_id": telegram_id,
+                "username": username,
+                "first_name": first_name,
+                "language": "ru",
+                "city": None,
+                "timezone": "Europe/Moscow",
+                "current_level": "alfard",
+                "streak_days": 0,
+                "pause_mode": False,
+                "pause_reason": None,
+                "last_active": datetime.now(timezone.utc).isoformat(),
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            response = supabase.table("users").insert(user_data).execute()
+            if response.data:
+                return response.data[0]
+        return existing
+    except Exception as e:
+        logging.error(f"Error creating user {telegram_id}: {e}")
+        return None
 
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    """Мягкий старт и онбординг пользователя."""
-    telegram_id = message.from_user.id
-    username = message.from_user.username
-    first_name = message.from_user.first_name
 
-    user = create_user(telegram_id, username, first_name)
+def get_user(telegram_id: int) -> Optional[Dict[str, Any]]:
+    """Получает пользователя по telegram_id."""
+    try:
+        response = supabase.table("users").select("*").eq("telegram_id", telegram_id).execute()
+        if response.data:
+            return response.data[0]
+    except Exception as e:
+        logging.error(f"Error getting user {telegram_id}: {e}")
+    return None
 
-    if not user or not user.get("city"):
-        welcome_text = (
-            f"Ассаляму алейкум, {first_name or 'дорогой гость'} 🤍\n\n"
-            "Добро пожаловать в **Amal365** — ваш мягкий и заботливый духовный компаньон.\n"
-            "Здесь нет места чувству вины или гонке за цифрами. Только вы, ваши шаги и Всевышний.\n\n"
-            "Чтобы мы могли точно рассчитывать время намазов, пожалуйста, отправьте название вашего города (например: *Москва*, *Казань*, *Бишкек*, *Нерюнгри*)."
-        )
-        await message.answer(welcome_text, parse_mode="Markdown")
-    else:
-        welcome_text = (
-            f"С возвращением, {first_name} 🤍\n\n"
-            f"Ваш город: **{user.get('city')}**\n"
-            "Выберите раздел ниже, чтобы продолжить:"
-        )
-        await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_main_menu_keyboard())
 
-@dp.message(F.text & ~F.text.startswith("/"))
-async def handle_text_messages(message: types.Message):
-    """Обработка текстовых сообщений (сохранение города при онбординге)."""
-    telegram_id = message.from_user.id
+def update_user(telegram_id: int, **kwargs: Any) -> Optional[List[Dict[str, Any]]]:
+    """Обновляет данные пользователя."""
+    try:
+        kwargs["last_active"] = datetime.now(timezone.utc).isoformat()
+        response = supabase.table("users").update(kwargs).eq("telegram_id", telegram_id).execute()
+        return response.data
+    except Exception as e:
+        logging.error(f"Error updating user {telegram_id}: {e}")
+    return None
+
+
+def get_today_progress(user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Получает или создает запись ежедневного прогресса за локальный день пользователя."""
+    user_id = user["id"]
+    local_date_str = get_user_local_date(user)
+    try:
+        response = supabase.table("daily_progress").select("*").eq("user_id", user_id).eq("date", local_date_str).execute()
+        if response.data:
+            return response.data[0]
+        else:
+            new_prog = {
+                "user_id": user_id,
+                "date": local_date_str,
+                "fajr_done": False,
+                "dhuhr_done": False,
+                "asr_done": False,
+                "maghrib_done": False,
+                "isha_done": False,
+                "tahajjud_done": False,
+                "morning_adhkar_done": False,
+                "evening_adhkar_done": False,
+                "salawat_count": 0,
+                "subhanallah_count": 0,
+                "alhamdulillah_count": 0,
+                "allahuakbar_count": 0,
+                "astaghfirullah_count": 0,
+                "la_ilaha_illallah_count": 0,
+                "active_tasbih_type": None,
+                "active_tasbih_progress": 0,
+                "quran_done": False,
+                "quran_pages": 0,
+                "activity_steps": 0,
+                "knowledge_done": False,
+                "reflection": None,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            ins = supabase.table("daily_progress").insert(new_prog).execute()
+            if ins.data:
+                return ins.data[0]
+    except Exception as e:
+        logging.error(f"Error getting/creating daily progress for user_id {user_id}: {e}")
+    return None
+
+
+def update_today_progress(user: Dict[str, Any], **kwargs: Any) -> Optional[List[Dict[str, Any]]]:
+    """Обновляет прогресс текущего дня."""
+    user_id = user["id"]
+    local_date_str = get_user_local_date(user)
+    try:
+        get_today_progress(user)
+        response = supabase.table("daily_progress").update(kwargs).eq("user_id", user_id).eq("date", local_date_str).execute()
+        return response.data
+    except Exception as e:
+        logging.error(f"Error updating daily progress for user_id {user_id}: {e}")
+    return None
+
+
+def save_prayer(telegram_id: int, prayer_name: str) -> Optional[List[Dict[str, Any]]]:
+    """Отмечает намаз выполненным и обновляет стрик при выполнении обязательного минимума."""
     user = get_user(telegram_id)
-
     if not user:
-        user = create_user(telegram_id, message.from_user.username, message.from_user.first_name)
+        return None
+    field_map = {
+        "Фаджр": "fajr_done",
+        "Зухр": "dhuhr_done",
+        "Аср": "asr_done",
+        "Магриб": "maghrib_done",
+        "Иша": "isha_done",
+        "Тахаджуд": "tahajjud_done"
+    }
+    field = field_map.get(prayer_name)
+    if field:
+        prog = get_today_progress(user)
+        if prog and not prog.get(field, False):
+            res = update_today_progress(user, **{field: True})
+            updated_prog = get_today_progress(user)
+            # Проверка обязательных 5 намазов для поддержания серии дней
+            if updated_prog and updated_prog.get("fajr_done") and updated_prog.get("dhuhr_done") and updated_prog.get("asr_done") and updated_prog.get("maghrib_done") and updated_prog.get("isha_done"):
+                current_streak = user.get("streak_days", 0) or 0
+                update_user(telegram_id, streak_days=max(current_streak, 1))
+            return res
+    return None
 
-    if user and not user.get("city"):
-        city_name = message.text.strip()
-        update_user(telegram_id, city=city_name, timezone="Europe/Moscow")
-        
-        await message.answer(
-            f"Город **{city_name}** успешно сохранен 🤍\n\n"
-            "Теперь ваш духовный трекер настроен.",
-            parse_mode="Markdown",
-            reply_markup=get_main_menu_keyboard()
-        )
-    else:
-        await message.answer("Я вас услышала. Ваша забота о духовном росте бесценна 🤍", reply_markup=get_main_menu_keyboard())
 
-@dp.callback_query(F.data == "menu_stats")
-async def cb_stats(callback: types.CallbackQuery):
-    """Показ статистики через инлайн-кнопку."""
-    telegram_id = callback.from_user.id
-    data = get_stats(telegram_id)
-    
-    if not data or not data.get("user"):
-        await callback.message.answer("Сначала отправьте /start для регистрации.")
-        await callback.answer()
-        return
+def save_adhkar(telegram_id: int, adhkar_type: str) -> Optional[List[Dict[str, Any]]]:
+    """Сохраняет статус утренних или вечерних азкаров."""
+    user = get_user(telegram_id)
+    if user:
+        field = f"morning_adhkar_done" if adhkar_type == "morning" else "evening_adhkar_done"
+        return update_today_progress(user, **{field: True})
+    return None
 
-    user = data["user"]
-    prog = data["progress"]
-    
-    streak = user.get("streak_days", 0)
-    city = user.get("city", "Не указан")
 
-    stats_text = (
-        f"📊 **Ваша статистика в Amal365**\n\n"
-        f"🏙 Город: {city}\n"
-        f"🔥 Серия дней (стрик): {streak} дн.\n\n"
-        f"✨ **Прогресс за сегодня:**\n"
-        f"• Фаджр: {'✅' if prog and prog.get('fajr') else '⭕️'}\n"
-        f"• Зухр: {'✅' if prog and prog.get('dhuhr') else '⭕️'}\n"
-        f"• Аср: {'✅' if prog and prog.get('asr') else '⭕️'}\n"
-        f"• Магриб: {'✅' if prog and prog.get('maghrib') else '⭕️'}\n"
-        f"• Иша: {'✅' if prog and prog.get('isha') else '⭕️'}\n"
-        f"• Тахаджуд: {'✅' if prog and prog.get('tahajjud') else '⭕️'}\n"
-        f"• Чтение Корана: {prog.get('quran_pages', 0) if prog else 0} стр."
-    )
+def save_tasbih_progress(telegram_id: int, dhikr_field: str, count: int, active_type: Optional[str] = None, active_progress: int = 0) -> Optional[List[Dict[str, Any]]]:
+    """Сохраняет прогресс умного тасбиха и общие счетчики зикров."""
+    user = get_user(telegram_id)
+    if user:
+        prog = get_today_progress(user)
+        if prog:
+            current = prog.get(dhikr_field, 0) or 0
+            updates = {
+                dhikr_field: current + count,
+                "active_tasbih_type": active_type,
+                "active_tasbih_progress": active_progress
+            }
+            return update_today_progress(user, **updates)
+    return None
 
-    await callback.message.edit_text(stats_text, parse_mode="Markdown", reply_markup=get_main_menu_keyboard())
-    await callback.answer()
 
-@dp.callback_query(F.data == "menu_prayers")
-async def cb_prayers_menu(callback: types.CallbackQuery):
-    """Меню выбора намазов для отметки."""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="Фаджр", callback_data="prayer_Фаджр"),
-            InlineKeyboardButton(text="Зухр", callback_data="prayer_Зухр")
-        ],
-        [
-            InlineKeyboardButton(text="Аср", callback_data="prayer_Аср"),
-            InlineKeyboardButton(text="Магриб", callback_data="prayer_Магриб")
-        ],
-        [
-            InlineKeyboardButton(text="Иша", callback_data="prayer_Иша"),
-            InlineKeyboardButton(text="Тахаджуд", callback_data="prayer_Тахаджуд")
-        ],
-        [
-            InlineKeyboardButton(text="🔙 Назад в меню", callback_data="menu_main")
-        ]
-    ])
-    await callback.message.edit_text("Выберите намаз, который хотите отметить:", reply_markup=keyboard)
-    await callback.answer()
+def save_quran(telegram_id: int, pages: int) -> Optional[List[Dict[str, Any]]]:
+    """Сохраняет прочитанные страницы Корана."""
+    user = get_user(telegram_id)
+    if user:
+        prog = get_today_progress(user)
+        if prog:
+            current = prog.get("quran_pages", 0) or 0
+            return update_today_progress(user, quran_pages=current + pages, quran_done=True)
+    return None
 
-@dp.callback_query(F.data.startswith("prayer_"))
-async def cb_save_prayer(callback: types.CallbackQuery):
-    """Сохранение отметки намаза."""
-    telegram_id = callback.from_user.id
-    prayer_name = callback.data.split("_")[1]
-    
-    save_prayer(telegram_id, prayer_name)
-    await callback.answer(f"Намаз «{prayer_name}» отмечен! 🤍")
-    await cb_prayers_menu(callback)
 
-@dp.callback_query(F.data == "menu_main")
-async def cb_main_menu(callback: types.CallbackQuery):
-    """Возврат в главное меню."""
-    await callback.message.edit_text("Главное меню Amal365 🤍", reply_markup=get_main_menu_keyboard())
-    await callback.answer()
+def save_activity(telegram_id: int, steps_or_minutes: int) -> Optional[List[Dict[str, Any]]]:
+    """Сохраняет физическую активность (шаги или спорт)."""
+    user = get_user(telegram_id)
+    if user:
+        prog = get_today_progress(user)
+        if prog:
+            current = prog.get("activity_steps", 0) or 0
+            return update_today_progress(user, activity_steps=current + steps_or_minutes)
+    return None
 
-@dp.message(Command("stats"))
-async def cmd_stats(message: types.Message):
-    """Команда /stats для просмотра статистики."""
-    telegram_id = message.from_user.id
-    data = get_stats(telegram_id)
-    
-    if not data or not data.get("user"):
-        await message.answer("Сначала отправьте /start для регистрации.")
-        return
 
-    user = data["user"]
-    prog = data["progress"]
-    
-    streak = user.get("streak_days", 0)
-    city = user.get("city", "Не указан")
-
-    stats_text = (
-        f"📊 **Ваша статистика в Amal365**\n\n"
-        f"🏙 Город: {city}\n"
-        f"🔥 Серия дней (стрик): {streak} дн.\n\n"
-        f"✨ **Прогресс за сегодня:**\n"
-        f"• Фаджр: {'✅' if prog and prog.get('fajr') else '⭕️'}\n"
-        f"• Зухр: {'✅' if prog and prog.get('dhuhr') else '⭕️'}\n"
-        f"• Аср: {'✅' if prog and prog.get('asr') else '⭕️'}\n"
-        f"• Магриб: {'✅' if prog and prog.get('maghrib') else '⭕️'}\n"
-        f"• Иша: {'✅' if prog and prog.get('isha') else '⭕️'}\n"
-        f"• Тахаджуд: {'✅' if prog and prog.get('tahajjud') else '⭕️'}\n"
-        f"• Чтение Корана: {prog.get('quran_pages', 0) if prog else 0} стр."
-    )
-
-    await message.answer(stats_text, parse_mode="Markdown", reply_markup=get_main_menu_keyboard())
-
-# --- Настройка вебхуков и сервера для Render ---
-async def on_startup(bot: Bot):
-    webhook_info = await bot.get_webhook_info()
-    if webhook_info.url != WEBHOOK_URL:
-        await bot.set_webhook(url=WEBHOOK_URL)
-        logging.info(f"Webhook set to: {WEBHOOK_URL}")
-
-def main():
-    app = web.Application()
-    
-    async def index(request):
-        return web.Response(text="Amal365 Bot Web Service is running 🤍")
-    
-    app.router.add_get("/", index)
-
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
-
-    setup_application(app, dp, bot=bot)
-    dp.startup.register(on_startup)
-
-    logging.info(f"Starting web server on port {PORT}...")
-    web.run_app(app, host="0.0.0.0", port=PORT)
-
-if __name__ == "__main__":
-    main()
+def get_stats(telegram_id: int) -> Optional[Dict[str, Any]]:
+    """Возвращает статистику пользователя и прогресс за текущий день."""
+    user = get_user(telegram_id)
+    if user:
+        prog = get_today_progress(user)
+        return {"user": user, "progress": prog}
+    return None
