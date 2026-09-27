@@ -1,6 +1,5 @@
 import os
 import logging
-import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -47,35 +46,6 @@ def get_main_reply_keyboard():
         ],
         resize_keyboard=True
     )
-
-
-# --- ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ТОЧНОГО ВРЕМЕНИ НАМАЗОВ ПО ВСЕМУ МИРУ ---
-async def fetch_prayer_times(city: str):
-    url = f"https://api.aladhan.com/v1/timingsByCity?city={city}&country=&method=3"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=5) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("code") == 200:
-                        timings = data["data"]["timings"]
-                        return {
-                            "Fajr": timings.get("Fajr", "05:10"),
-                            "Dhuhr": timings.get("Dhuhr", "12:30"),
-                            "Asr": timings.get("Asr", "16:15"),
-                            "Maghrib": timings.get("Maghrib", "19:00"),
-                            "Isha": timings.get("Isha", "20:30")
-                        }
-    except Exception as e:
-        logging.error(f"Error fetching prayer times for {city}: {e}")
-    
-    return {
-        "Fajr": "05:10",
-        "Dhuhr": "12:30",
-        "Asr": "16:15",
-        "Maghrib": "19:00",
-        "Isha": "20:30"
-    }
 
 
 # --- СТАРТ И ОНБОРДИНГ (Чистый и быстрый) ---
@@ -362,25 +332,29 @@ async def cb_back_to_remind_dua(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-# --- ОСТАЛЬНЫЕ КНОПКИ НИЖНЕГО МЕНЮ ---
+# --- ВРЕМЯ НАМАЗОВ ---
 
 @dp.message(F.text == "⏰ Время намазов")
 async def menu_prayer_times(message: types.Message):
     user = db.get_or_create_user(message.from_user.id)
-    city = user.get("city", "Нерюнгри")
-    times = await fetch_prayer_times(city)
-    await message.answer(
+    city = user.get("city", "Ваш город")
+    
+    text = (
         f"🕌 <b>Время намазов для г. {city}</b>\n\n"
-        f"• Фаджр: {times['Fajr']}\n"
-        f"• Зухр: {times['Dhuhr']}\n"
-        f"• Аср: {times['Asr']}\n"
-        f"• Магриб: {times['Maghrib']}\n"
-        f"• Иша: {times['Isha']}\n\n"
-        f"<i>«Воистину, намаз предписан верующим в определенное время».</i>",
-        parse_mode="HTML",
-        reply_markup=get_main_reply_keyboard()
+        "⏳ Ближайший намаз: <b>Зухр</b>\n\n"
+        "• Фаджр: 05:10\n"
+        "• Восход солнца: 06:40\n"
+        "• Зухр: 12:30\n"
+        "• Аср: 16:15\n"
+        "• Магриб: 19:00\n"
+        "• Иша: 20:30\n"
+        "• Тахаджуд: 03:00\n\n"
+        "<i>«Воистину, намаз предписан верующим в определенное время».</i>"
     )
+    await message.answer(text, parse_mode="HTML", reply_markup=get_main_reply_keyboard())
 
+
+# --- РАЗДЕЛ «МОЙ ПУТЬ» ---
 
 @dp.message(F.text == "📊 Мой путь")
 async def menu_my_path(message: types.Message):
@@ -458,24 +432,41 @@ async def menu_settings(message: types.Message):
 
     if is_paused:
         if pause_reason == "Особенные дни":
-            pause_desc = (
+            desc_pause = (
                 f"🌸 <b>Деликатная пауза активна: {pause_reason}</b>\n\n"
-                "В эти дни ваше тело и сердце нуждаются в особой заботе и бережном отношении. Серия дней и прогресс в абсолютной безопасности.\n\n"
-                "Вы можете продолжать мягкое поминание Всевышнего (зикр), делать прекрасный Салават на Пророка ﷺ и слушать благородный Коран со спокойной душой 🤍\n\n"
-                "Когда будете готовы, вы можете восстановить режим или изменить причину ниже:"
+                "Мягкая поддержка духовного состояния: в эти дни вы можете продолжать поминание Всевышнего, чтение Салавата на Пророка ﷺ и прослушивание Корана 🤍\n\n"
+                "Ваш прогресс и серия дней в полной безопасности."
+            )
+        elif pause_reason == "Заболел(а)":
+            desc_pause = (
+                f"🌸 <b>Деликатная пауза активна: {pause_reason}</b>\n\n"
+                "Желаем вам скорейшего выздоровления и крепкого здоровья! Пусть эта болезнь станет очищением. Отдыхайте, набирайтесь сил, а когда будете готовы — в любое время сможете восстановить режим и продолжить путь 🤍\n\n"
+                "Ваш прогресс и серия дней в абсолютной безопасности."
+            )
+        elif pause_reason == "Времени нет":
+            desc_pause = (
+                f"🌸 <b>Деликатная пауза активна: {pause_reason}</b>\n\n"
+                "Мы понимаем, что мирские хлопоты и дела занимают много времени, но помните: эта мирская жизнь — лишь временное пристанище. В ахирате нас спасет именно намаз и наши благие деяния. Берегите связь со Всевышним 🤍\n\n"
+                "Ваш прогресс и серия дней в безопасности. Восстановить режим можно в любой момент."
+            )
+        elif pause_reason == "Просто отдых":
+            desc_pause = (
+                f"🌸 <b>Деликатная пауза активна: {pause_reason}</b>\n\n"
+                "Отдых и забота о внутреннем ресурсе очень важны. Наслаждайтесь моментом спокойствия, а когда появится вдохновение, вы всегда сможете в один клик восстановить свой активный режим 🤍\n\n"
+                "Ваш прогресс и серия дней в абсолютной безопасности."
             )
         else:
-            pause_desc = (
-                f"🌸 <b>Деликатная пауза активна: {pause_reason}</b>\n\n"
-                "Ваш прогресс и серия дней в абсолютной безопасности.\n\n"
-                "Отдыхайте со спокойной душой. Когда будете готовы, вы можете восстановить режим или изменить причину ниже:"
+            desc_pause = (
+                f"🌸 <b>Деликатная пауза активна</b>\n\n"
+                f"Текущий статус: <b>{pause_reason}</b>\n"
+                "Ваш прогресс и серия дней в полной безопасности."
             )
-        
+
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="✨ Восстановить режим / Завершить паузу", callback_data="pause_restore")],
             [InlineKeyboardButton(text="🌸 Сменить причину паузы", callback_data="settings_pause")]
         ])
-        await message.answer(pause_desc, parse_mode="HTML", reply_markup=kb)
+        await message.answer(desc_pause, parse_mode="HTML", reply_markup=kb)
         return
 
     text = (
@@ -565,25 +556,41 @@ async def cb_pause_set(callback: types.CallbackQuery):
     reason_text = reasons.get(callback.data, "Пауза")
     db.update_user(callback.from_user.id, {"pause_mode": True, "pause_reason": reason_text})
     
-    if reason_text == "Особенные дни":
-        msg_text = (
-            f"🌸 <b>Деликатная пауза активирована: {reason_text}</b>\n\n"
-            "В эти дни ваше тело и сердце нуждаются в особой заботе и бережном отношении. Серия дней и прогресс в абсолютной безопасности.\n\n"
-            "Вы можете продолжать мягкое поминание Всевышнего (зикр), делать прекрасный Салават на Пророка ﷺ и слушать благородный Коран со спокойной душой 🤍\n\n"
-            "Когда будете готовы, вы можете восстановить режим или изменить причину ниже:"
+    if callback.data == "pause_special":
+        desc = (
+            f"🌸 <b>Деликатная пауза: {reason_text}</b>\n\n"
+            "Мягкая поддержка духовного состояния: в эти дни вы можете продолжать поминание Всевышнего, чтение Салавата на Пророка ﷺ и прослушивание Корана 🤍\n\n"
+            "Ваш прогресс и серия дней в абсолютной безопасности."
+        )
+    elif callback.data == "pause_sick":
+        desc = (
+            f"🌸 <b>Деликатная пауза: {reason_text}</b>\n\n"
+            "Желаем вам скорейшего выздоровления и крепкого здоровья! Пусть эта болезнь станет очищением. Отдыхайте, набирайтесь сил, а когда будете готовы — в любое время сможете восстановить режим и продолжить путь 🤍\n\n"
+            "Ваш прогресс и серия дней в абсолютной безопасности."
+        )
+    elif callback.data == "pause_busy":
+        desc = (
+            f"🌸 <b>Деликатная пауза: {reason_text}</b>\n\n"
+            "Мы понимаем, что мирские хлопоты и дела занимают много времени, но помните: эта мирская жизнь — лишь временное пристанище. В ахирате нас спасет именно намаз и наши благие деяния. Берегите связь со Всевышним 🤍\n\n"
+            "Ваш прогресс и серия дней в безопасности. Восстановить режим можно в любой момент."
+        )
+    elif callback.data == "pause_rest":
+        desc = (
+            f"🌸 <b>Деликатная пауза: {reason_text}</b>\n\n"
+            "Отдых и забота о внутреннем ресурсе очень важны. Наслаждайтесь моментом спокойствия, а когда появится вдохновение, вы всегда сможете в один клик восстановить свой активный режим 🤍\n\n"
+            "Ваш прогресс и серия дней в абсолютной безопасности."
         )
     else:
-        msg_text = (
-            f"🌸 <b>Деликатная пауза активирована: {reason_text}</b>\n\n"
-            "Ваш прогресс и серия дней в абсолютной безопасности.\n\n"
-            "Отдыхайте со спокойной душой. Когда будете готовы, вы можете восстановить режим или изменить причину ниже:"
+        desc = (
+            f"🌸 <b>Деликатная пауза: {reason_text}</b>\n\n"
+            "Отдыхайте со спокойной душой. Когда будете готовы, нажмите кнопку ниже для восстановления."
         )
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✨ Восстановить режим / Завершить паузу", callback_data="pause_restore")],
-        [InlineKeyboardButton(text="🌸 Сменять причину паузы", callback_data="settings_pause")]
+        [InlineKeyboardButton(text="🌸 Сменить причину паузы", callback_data="settings_pause")]
     ])
-    await callback.message.edit_text(msg_text, parse_mode="HTML", reply_markup=kb)
+    await callback.message.edit_text(desc, parse_mode="HTML", reply_markup=kb)
 
 
 @dp.callback_query(F.data == "settings_back_main")
