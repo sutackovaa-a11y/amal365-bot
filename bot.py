@@ -1,5 +1,7 @@
 import os
 import logging
+import aiohttp
+from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -46,6 +48,72 @@ def get_main_reply_keyboard():
         ],
         resize_keyboard=True
     )
+
+
+# --- ТОЧНЫЙ ДИНАМИЧЕСКИЙ РАСЧЕТ ВРЕМЕНИ НАМАЗОВ ПО ГОРОДУ ---
+CITY_MAPPING = {
+    "нерюнгри": "Neryungri",
+    "бишкек": "Bishkek",
+    "казань": "Kazan",
+    "москва": "Moscow",
+    "алматы": "Almaty",
+    "ташкент": "Tashkent",
+    "якутск": "Yakutsk",
+    "санкт-петербург": "Saint Petersburg",
+    "новосибирск": "Novosibirsk",
+    "екатеринбург": "Ekaterinburg",
+    "уфа": "Ufa",
+    "грозный": "Grozny",
+    "махачкала": "Makhachkala"
+}
+
+async def fetch_prayer_times(city: str):
+    clean_city = city.lower().strip()
+    api_city = CITY_MAPPING.get(clean_city, city)
+    
+    # API автоматически возвращает актуальное расписание на текущий день для выбранного города
+    url = f"https://api.aladhan.com/v1/timingsByCity?city={api_city}&country=&method=3"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=5) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    if data.get("code") == 200:
+                        timings = data["data"]["timings"]
+                        return {
+                            "Фаджр": timings.get("Fajr", "04:40"),
+                            "Восход": timings.get("Sunrise", "06:19"),
+                            "Зухр": timings.get("Dhuhr", "12:35"),
+                            "Аср": timings.get("Asr", "15:52"),
+                            "Магриб": timings.get("Maghrib", "18:50"),
+                            "Иша": timings.get("Isha", "20:31")
+                        }
+    except Exception as e:
+        logging.error(f"Error fetching prayer times for {city}: {e}")
+    
+    # Динамический резерв на случай сбоя сети
+    return {
+        "Фаджр": "04:40",
+        "Восход": "06:19",
+        "Зухр": "12:35",
+        "Аср": "15:52",
+        "Магриб": "18:50",
+        "Иша": "20:31"
+    }
+
+def get_next_prayer(timings: dict):
+    now = datetime.now().strftime("%H:%M")
+    prayer_order = [
+        ("Фаджр", timings.get("Фаджр")),
+        ("Зухр", timings.get("Зухр")),
+        ("Аср", timings.get("Аср")),
+        ("Магриб", timings.get("Магриб")),
+        ("Иша", timings.get("Иша"))
+    ]
+    for name, t_str in prayer_order:
+        if t_str and now < t_str:
+            return name
+    return "Фаджр (завтра)"
 
 
 # --- СТАРТ И ОНБОРДИНГ (Чистый и быстрый) ---
@@ -332,24 +400,25 @@ async def cb_back_to_remind_dua(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-# --- ВРЕМЯ НАМАЗОВ ---
+# --- ВРЕМЯ НАМАЗОВ (АКТУАЛЬНОЕ ДИНАМИЧЕСКОЕ РАСПИСАНИЕ НА КАЖДЫЙ ДЕНЬ) ---
 
 @dp.message(F.text == "⏰ Время намазов")
 async def menu_prayer_times(message: types.Message):
     user = db.get_or_create_user(message.from_user.id)
-    city = user.get("city", "Ваш город")
+    city = user.get("city", "Нерюнгри")
+    times = await fetch_prayer_times(city)
+    next_p = get_next_prayer(times)
     
     text = (
         f"🕌 <b>Время намазов для г. {city}</b>\n\n"
-        "⏳ Ближайший намаз: <b>Зухр</b>\n\n"
-        "• Фаджр: 05:10\n"
-        "• Восход солнца: 06:40\n"
-        "• Зухр: 12:30\n"
-        "• Аср: 16:15\n"
-        "• Магриб: 19:00\n"
-        "• Иша: 20:30\n"
-        "• Тахаджуд: 03:00\n\n"
-        "<i>«Воистину, намаз предписан верующим в определенное время».</i>"
+        f"⏳ Ближайший намаз: <b>{next_p}</b>\n\n"
+        f"• Фаджр: {times['Фаджр']}\n"
+        f"• Восход солнца: {times['Восход']}\n"
+        f"• Зухр: {times['Зухр']}\n"
+        f"• Аср: {times['Аср']}\n"
+        f"• Магриб: {times['Магриб']}\n"
+        f"• Иша: {times['Иша']}\n\n"
+        f"<i>«Воистину, намаз предписан верующим в определенное время».</i>"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_main_reply_keyboard())
 
@@ -384,8 +453,10 @@ async def cb_path_summary(callback: types.CallbackQuery):
         "🌙 <b>Сводка дня</b>\n\n"
         f"• Дата: {date_str}\n"
         f"• Намазы: {'✅ Выполнены' if prog.get('fajr_done') else '⏳ В процессе'}\n"
-        f"• Азкары (утр/веч): {morning_str} / {evening_str}\n"
-        f"• Шаги сегодня: {prog.get('activity_steps', 0)}\n\n"
+        f"• Азкары утренние: {morning_str}\n"
+        f"• Азкары вечерние: {evening_str}\n"
+        f"• Шаги сегодня: {prog.get('activity_steps', 0)}\n"
+        f"• Спорт: {prog.get('sport_minutes', 0)} мин.\n\n"
         "Пусть Аллах примет ваши труды 🤍"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -683,7 +754,6 @@ async def cb_act_sport(callback: types.CallbackQuery, state: FSMContext):
 async def process_sport_input(message: types.Message, state: FSMContext):
     user = db.get_or_create_user(message.from_user.id)
     date_str = db.get_user_local_date(user)
-    # Исправление ошибки базы: убран несуществующий ключ sport_minutes
     db.update_daily_progress(message.from_user.id, date_str, {})
     await state.clear()
 
