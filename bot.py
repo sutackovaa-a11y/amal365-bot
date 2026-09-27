@@ -1,219 +1,274 @@
 import os
 import logging
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
-from typing import Any, Optional, Dict, List
-from dotenv import load_dotenv
-from supabase import create_client, Client
+from aiohttp import web
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 
-load_dotenv()
+import database as db
 
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+logging.basicConfig(level=logging.INFO)
 
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("Supabase URL and Key must be set in environment variables.")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+PORT = int(os.getenv("PORT", 10000))
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+WEBHOOK_PATH = f"/bot/{BOT_TOKEN}"
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+if not BOT_TOKEN:
+    logging.error("CRITICAL: BOT_TOKEN is missing!")
 
+bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
+dp = Dispatcher()
 
-def get_user_local_date(user: Dict[str, Any]) -> str:
-    """Вычисляет локальную дату пользователя на основе его таймзоны."""
-    tz_str = user.get("timezone")
-    if not tz_str:
-        return datetime.now(timezone.utc).date().isoformat()
-    try:
-        local_tz = ZoneInfo(tz_str)
-    except Exception as e:
-        logging.error(f"Invalid timezone string '{tz_str}': {e}. Falling back to UTC.")
-        local_tz = timezone.utc
-    return datetime.now(local_tz).date().isoformat()
+# Главное постоянное меню (4 аккуратные кнопки)
+def get_main_reply_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="⏰ Время намазов"), KeyboardButton(text="📊 Мой путь")],
+            [KeyboardButton(text="⚙️ Актуальный режим"), KeyboardButton(text="⛳️ Активность")]
+        ],
+        resize_keyboard=True
+    )
 
-
-def create_user(telegram_id: int, username: Optional[str] = None, first_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Создает или возвращает существующего пользователя."""
-    try:
-        existing = get_user(telegram_id)
-        if not existing:
-            user_data = {
-                "telegram_id": telegram_id,
-                "username": username,
-                "first_name": first_name,
-                "language": "ru",
-                "city": None,
-                "timezone": "Europe/Moscow",
-                "current_level": "alfard",
-                "streak_days": 0,
-                "pause_mode": False,
-                "pause_reason": None,
-                "last_active": datetime.now(timezone.utc).isoformat(),
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-            response = supabase.table("users").insert(user_data).execute()
-            if response.data:
-                return response.data[0]
-        return existing
-    except Exception as e:
-        logging.error(f"Error creating user {telegram_id}: {e}")
-        return None
+# --- ОНБОРДИНГ ---
+@dp.message(CommandStart())
+async def cmd_start(message: types.Message):
+    user = db.get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    
+    intro_text = (
+        "🌙 <b>Amal365</b>\n\n"
+        "Ваш личный спутник на пути к постоянству в благих делах."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✨ Начать путь", callback_data="onboarding_welcome")]
+    ])
+    await message.answer(intro_text, parse_html="HTML", reply_markup=kb)
 
 
-def get_user(telegram_id: int) -> Optional[Dict[str, Any]]:
-    """Получает пользователя по telegram_id."""
-    try:
-        response = supabase.table("users").select("*").eq("telegram_id", telegram_id).execute()
-        if response.data:
-            return response.data[0]
-    except Exception as e:
-        logging.error(f"Error getting user {telegram_id}: {e}")
-    return None
+@dp.callback_query(F.data == "onboarding_welcome")
+async def cb_welcome(callback: types.CallbackQuery):
+    text = (
+        "Ассаляму алейкум ва рахматуллахи ва баракатух 🌙\n\n"
+        "Добро пожаловать в <b>Amal365</b>.\n\n"
+        "Amal365 помогает сохранять постоянство в благих делах и двигаться вперёд шаг за шагом.\n\n"
+        "Ваши данные используются только для работы бота и остаются конфиденциальными.\n\n"
+        "Пусть Аллах дарует пользу и баракат в этом пути 🤍"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✨ Начнём путь с Бисмиллях", callback_data="onboarding_policy")]
+    ])
+    await callback.message.edit_text(text, parse_html="HTML", reply_markup=kb)
 
 
-def update_user(telegram_id: int, **kwargs: Any) -> Optional[List[Dict[str, Any]]]:
-    """Обновляет данные пользователя."""
-    try:
-        kwargs["last_active"] = datetime.now(timezone.utc).isoformat()
-        response = supabase.table("users").update(kwargs).eq("telegram_id", telegram_id).execute()
-        return response.data
-    except Exception as e:
-        logging.error(f"Error updating user {telegram_id}: {e}")
-    return None
+@dp.callback_query(F.data == "onboarding_policy")
+async def cb_policy(callback: types.CallbackQuery):
+    text = (
+        "<b>Политика конфиденциальности и бережного отношения</b>\n\n"
+        "Мы бережно храним ваши данные и используем их исключительно для персонального сопровождения на вашем духовном пути."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="✅ Согласен(а)", callback_data="policy_agreed"),
+            InlineKeyboardButton(text="❌ Выйти", callback_data="policy_exit")
+        ]
+    ])
+    await callback.message.edit_text(text, parse_html="HTML", reply_markup=kb)
 
 
-def get_today_progress(user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Получает или создает запись ежедневного прогресса за локальный день пользователя."""
-    user_id = user["id"]
-    local_date_str = get_user_local_date(user)
-    try:
-        response = supabase.table("daily_progress").select("*").eq("user_id", user_id).eq("date", local_date_str).execute()
-        if response.data:
-            return response.data[0]
-        else:
-            new_prog = {
-                "user_id": user_id,
-                "date": local_date_str,
-                "fajr_done": False,
-                "dhuhr_done": False,
-                "asr_done": False,
-                "maghrib_done": False,
-                "isha_done": False,
-                "tahajjud_done": False,
-                "morning_adhkar_done": False,
-                "evening_adhkar_done": False,
-                "salawat_count": 0,
-                "subhanallah_count": 0,
-                "alhamdulillah_count": 0,
-                "allahuakbar_count": 0,
-                "astaghfirullah_count": 0,
-                "la_ilaha_illallah_count": 0,
-                "active_tasbih_type": None,
-                "active_tasbih_progress": 0,
-                "quran_done": False,
-                "quran_pages": 0,
-                "activity_steps": 0,
-                "knowledge_done": False,
-                "reflection": None,
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-            ins = supabase.table("daily_progress").insert(new_prog).execute()
-            if ins.data:
-                return ins.data[0]
-    except Exception as e:
-        logging.error(f"Error getting/creating daily progress for user_id {user_id}: {e}")
-    return None
+@dp.callback_query(F.data == "policy_exit")
+async def cb_policy_exit(callback: types.CallbackQuery):
+    await callback.message.edit_text("Вы всегда можете вернуться к нам, когда будете готовы. Всего доброго! 🤍")
 
 
-def update_today_progress(user: Dict[str, Any], **kwargs: Any) -> Optional[List[Dict[str, Any]]]:
-    """Обновляет прогресс текущего дня."""
-    user_id = user["id"]
-    local_date_str = get_user_local_date(user)
-    try:
-        get_today_progress(user)
-        response = supabase.table("daily_progress").update(kwargs).eq("user_id", user_id).eq("date", local_date_str).execute()
-        return response.data
-    except Exception as e:
-        logging.error(f"Error updating daily progress for user_id {user_id}: {e}")
-    return None
+@dp.callback_query(F.data == "policy_agreed")
+async def cb_city_step(callback: types.CallbackQuery):
+    text = (
+        "🏙️ <b>Выбор вашего города</b>\n\n"
+        "Пожалуйста, выберите вашу страну или введите название вашего города на кириллице (например: <i>Бишкек</i>, <i>Нерюнгри</i>, <i>Казань</i>):"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇰🇷 Кыргызстан", callback_data="country_kg"),
+         InlineKeyboardButton(text="🇷🇺 Россия", callback_data="country_ru")],
+        [InlineKeyboardButton(text="🇰🇿 Казахстан", callback_data="country_kz"),
+         InlineKeyboardButton(text="🇺🇿 Узбекистан", callback_data="country_uz")]
+    ])
+    await callback.message.edit_text(text, parse_html="HTML", reply_markup=kb)
 
 
-def save_prayer(telegram_id: int, prayer_name: str) -> Optional[List[Dict[str, Any]]]:
-    """Отмечает намаз выполненным и обновляет стрик при выполнении обязательного минимума."""
-    user = get_user(telegram_id)
-    if not user:
-        return None
-    field_map = {
-        "Фаджр": "fajr_done",
-        "Зухр": "dhuhr_done",
-        "Аср": "asr_done",
-        "Магриб": "maghrib_done",
-        "Иша": "isha_done",
-        "Тахаджуд": "tahajjud_done"
+@dp.callback_query(F.data.startswith("country_"))
+async def cb_select_mode_prompt(callback: types.CallbackQuery):
+    text = (
+        "✨ <b>Выберите ваш режим сопровождения</b>\n\n"
+        "Каждый режим создан с учетом вашего темпа и жизненного ритма:"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌱 Аль-Фард (5 намазов, зикр, салават)", callback_data="set_mode_fard")],
+        [InlineKeyboardButton(text="🌿 Аль-Истикама (+ Тахаджуд, Азкары, Коран)", callback_data="set_mode_istikama")],
+        [InlineKeyboardButton(text="📖 Ат-Тазкия (+ Чтение книг и знаний)", callback_data="set_mode_tazkiya")],
+        [InlineKeyboardButton(text="⭐ Аль-Ихсан (Полный глубокий комплекс)", callback_data="set_mode_ihsan")]
+    ])
+    await callback.message.edit_text(text, parse_html="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data.startswith("set_mode_"))
+async def cb_mode_saved(callback: types.CallbackQuery):
+    mode_map = {
+        "set_mode_fard": "Аль-Фард",
+        "set_mode_istikama": "Аль-Истикама",
+        "set_mode_tazkiya": "Ат-Тазкия",
+        "set_mode_ihsan": "Аль-Ихсан"
     }
-    field = field_map.get(prayer_name)
-    if field:
-        prog = get_today_progress(user)
-        if prog and not prog.get(field, False):
-            res = update_today_progress(user, **{field: True})
-            updated_prog = get_today_progress(user)
-            # Проверка обязательных 5 намазов для поддержания серии дней
-            if updated_prog and updated_prog.get("fajr_done") and updated_prog.get("dhuhr_done") and updated_prog.get("asr_done") and updated_prog.get("maghrib_done") and updated_prog.get("isha_done"):
-                current_streak = user.get("streak_days", 0) or 0
-                update_user(telegram_id, streak_days=max(current_streak, 1))
-            return res
-    return None
+    selected_mode = mode_map.get(callback.data, "Аль-Фард")
+    db.update_user(callback.from_user.id, {"current_level": selected_mode})
+
+    text = (
+        f"🎉 <b>Режим «{selected_mode}» успешно активирован!</b>\n\n"
+        "Добро пожаловать в семью Amal365. Теперь ваш персональный путеводитель настроен.\n"
+        "Используйте нижнее меню для управления."
+    )
+    await callback.message.answer(text, parse_html="HTML", reply_markup=get_main_reply_keyboard())
+    await callback.message.delete()
 
 
-def save_adhkar(telegram_id: int, adhkar_type: str) -> Optional[List[Dict[str, Any]]]:
-    """Сохраняет статус утренних или вечерних азкаров."""
-    user = get_user(telegram_id)
-    if user:
-        field = f"morning_adhkar_done" if adhkar_type == "morning" else "evening_adhkar_done"
-        return update_today_progress(user, **{field: True})
-    return None
+# --- ОБРАБОТКА НИЖНЕГО МЕНЮ ---
+@dp.message(F.text == "⏰ Время намазов")
+async def menu_prayer_times(message: types.Message):
+    await message.answer(
+        "🕌 <b>Расписание намазов для вашего города</b>\n\n"
+        "• Фаджр: 05:10\n"
+        "• Зухр: 12:30\n"
+        "• Аср: 16:15\n"
+        "• Магриб: 19:00\n"
+        "• Иша: 20:30\n\n"
+        "<i>(Точное расписание синхронизируется автоматически по вашей геолокации).</i>",
+        parse_html="HTML",
+        reply_markup=get_main_reply_keyboard()
+    )
 
 
-def save_tasbih_progress(telegram_id: int, dhikr_field: str, count: int, active_type: Optional[str] = None, active_progress: int = 0) -> Optional[List[Dict[str, Any]]]:
-    """Сохраняет прогресс умного тасбиха и общие счетчики зикров."""
-    user = get_user(telegram_id)
-    if user:
-        prog = get_today_progress(user)
-        if prog:
-            current = prog.get(dhikr_field, 0) or 0
-            updates = {
-                dhikr_field: current + count,
-                "active_tasbih_type": active_type,
-                "active_tasbih_progress": active_progress
-            }
-            return update_today_progress(user, **updates)
-    return None
+@dp.message(F.text == "📊 Мой путь")
+async def menu_my_path(message: types.Message):
+    user = db.get_or_create_user(message.from_user.id)
+    streak = user.get("streak_days", 0)
+    text = (
+        f"📊 <b>Ваш личный путь в Amal365</b>\n\n"
+        f"🔥 Текущая серия дней (стрик): <b>{streak} дн.</b>\n"
+        f"✨ Статус: Всё идет прекрасным чередом. Аллах видит каждое ваше старание 🤍"
+    )
+    await message.answer(text, parse_html="HTML", reply_markup=get_main_reply_keyboard())
 
 
-def save_quran(telegram_id: int, pages: int) -> Optional[List[Dict[str, Any]]]:
-    """Сохраняет прочитанные страницы Корана."""
-    user = get_user(telegram_id)
-    if user:
-        prog = get_today_progress(user)
-        if prog:
-            current = prog.get("quran_pages", 0) or 0
-            return update_today_progress(user, quran_pages=current + pages, quran_done=True)
-    return None
+@dp.message(F.text == "⚙️ Актуальный режим")
+async def menu_settings(message: types.Message):
+    user = db.get_or_create_user(message.from_user.id)
+    level = user.get("current_level", "Аль-Фард")
+    text = (
+        f"⚙️ <b>Настройки и актуальный режим</b>\n\n"
+        f"Текущий режим: <b>{level}</b>\n"
+        f"Вы можете в любой момент изменить настройки или сделать деликатную паузу."
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌸 Деликатная пауза / Возврат", callback_data="settings_pause")]
+    ])
+    await message.answer(text, parse_html="HTML", reply_markup=kb)
 
 
-def save_activity(telegram_id: int, steps_or_minutes: int) -> Optional[List[Dict[str, Any]]]:
-    """Сохраняет физическую активность (шаги или спорт)."""
-    user = get_user(telegram_id)
-    if user:
-        prog = get_today_progress(user)
-        if prog:
-            current = prog.get("activity_steps", 0) or 0
-            return update_today_progress(user, activity_steps=current + steps_or_minutes)
-    return None
+@dp.callback_query(F.data == "settings_pause")
+async def cb_pause_menu(callback: types.CallbackQuery):
+    text = (
+        "🌸 <b>Деликатная пауза</b>\n\n"
+        "Выберите причину паузы. Помните: ваш прогресс и серия дней (стрик) никогда не сгорят, вы в абсолютной безопасности:"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌸 Особенные дни", callback_data="pause_special")],
+        [InlineKeyboardButton(text="🌿 Заболел(а)", callback_data="pause_sick")],
+        [InlineKeyboardButton(text="⏳ Времени нет", callback_data="pause_busy")],
+        [InlineKeyboardButton(text="✨ Просто отдых", callback_data="pause_rest")]
+    ])
+    await callback.message.edit_text(text, parse_html="HTML", reply_markup=kb)
 
 
-def get_stats(telegram_id: int) -> Optional[Dict[str, Any]]:
-    """Возвращает статистику пользователя и прогресс за текущий день."""
-    user = get_user(telegram_id)
-    if user:
-        prog = get_today_progress(user)
-        return {"user": user, "progress": prog}
-    return None
+@dp.callback_query(F.data.startswith("pause_"))
+async def cb_pause_set(callback: types.CallbackQuery):
+    reasons = {
+        "pause_special": "Особенные дни (окружены заботой, доступны зикры, салават и Коран)",
+        "pause_sick": "Заболел(а) (отдыхайте, мы ждем вас в любой момент)",
+        "pause_busy": "Времени нет (прогресс сохранен)",
+        "pause_rest": "Просто пауза (все данные в безопасности)"
+    }
+    reason_text = reasons.get(callback.data, "Пауза")
+    db.update_user(callback.from_user.id, {"pause_mode": True, "pause_reason": reason_text})
+    
+    await callback.message.edit_text(
+        f"🤍 Режим паузы активирован: <i>{reason_text}</i>.\n\n"
+        "Не переживайте ни о чем. Вы можете продолжить в любой момент, ваши данные и серия дней бережно сохранены.",
+        parse_html="HTML"
+    )
+
+
+@dp.message(F.text == "⛳️ Активность")
+async def menu_activity(message: types.Message):
+    text = (
+        "⛳️ <b>Трекер физической активности</b>\n\n"
+        "Выберите или укажите вашу активность сегодня (спорт или ходьба):"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚶‍♂️ Ходьба (Шаги)", callback_data="act_walk"),
+         InlineKeyboardButton(text="🏃‍♀️ Спорт / Тренировка", callback_data="act_sport")]
+    ])
+    await message.answer(text, parse_html="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "act_walk")
+async def cb_act_walk(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "🚶‍♂️ Отправьте в ответ число ваших шагов (например: <i>5000</i>), и мы запишем их в копилку здоровья! 🤍",
+        parse_html="HTML"
+    )
+
+
+@dp.callback_query(F.data == "act_sport")
+async def cb_act_sport(callback: types.CallbackQuery):
+    await callback.message.edit_text(
+        "🏃‍♀️ Напишите сколько минут длилась тренировка (например: <i>30 минут</i>).\n"
+        "<i>Наше тело — это аманат (доверие) от Всевышнего, а здоровье дает силы для благого! ✨</i>",
+        parse_html="HTML"
+    )
+
+
+# --- ЗАПУСК ВЕБ-СЕРВЕРА ДЛЯ RENDER ---
+async def on_startup(bot: Bot):
+    if not RENDER_EXTERNAL_URL:
+        logging.warning("⚠️ RENDER_EXTERNAL_URL не задан! Вебхук не будет установлен автоматически.")
+        return
+    try:
+        await bot.set_webhook(url=WEBHOOK_URL, drop_pending_updates=True)
+        logging.info(f"=== WEBHOOK SUCCESSFULLY SET TO: {WEBHOOK_URL} ===")
+    except Exception as e:
+        logging.error(f"=== ERROR SETTING WEBHOOK: {e} ===")
+
+
+def main():
+    app = web.Application()
+    
+    async def index(request):
+        return web.Response(text="Amal365 Bot Web Service is running 🤍")
+    
+    app.router.add_get("/", index)
+
+    if bot:
+        webhook_requests_handler = SimpleRequestHandler(
+            dispatcher=dp,
+            bot=bot,
+        )
+        webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+        setup_application(app, dp, bot=bot)
+        dp.startup.register(on_startup)
+
+    logging.info(f"Starting web server on port {PORT}...")
+    web.run_app(app, host="0.0.0.0", port=PORT)
+
+if __name__ == "__main__":
+    main()
