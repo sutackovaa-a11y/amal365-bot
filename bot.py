@@ -19,11 +19,10 @@ from database import (
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Render автоматически передает PORT, по умолчанию ставим 8080
+# Render автоматически передает порт, по умолчанию берем 8080
 PORT = int(os.getenv("PORT", 8080))
 
-# Вставьте ваш реальный URL от Render в переменные среды (например: https://your-app.onrender.com)
-# Либо Render сам передает хост, но лучше прописать RENDER_EXTERNAL_URL в Environment Variables на Render
+# URL вашего приложения на Render (например: https://your-app.onrender.com)
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
 
 WEBHOOK_PATH = f"/bot/{BOT_TOKEN}"
@@ -38,18 +37,17 @@ dp = Dispatcher()
 logging.basicConfig(level=logging.INFO)
 
 def get_main_menu_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура главного меню для интерактивной отметки дел."""
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    """Клавиатура главного меню."""
+    return InlineKeyboardMarkup(inline_keyboard=[
         [
             InlineKeyboardButton(text="🕌 Намазы", callback_data="menu_prayers"),
             InlineKeyboardButton(text="📊 Статистика", callback_data="menu_stats")
         ]
     ])
-    return keyboard
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    """Мягкий старт и онбординг пользователя в Amal365."""
+    """Мягкий старт и онбординг пользователя."""
     telegram_id = message.from_user.id
     username = message.from_user.username
     first_name = message.from_user.first_name
@@ -119,9 +117,9 @@ async def cb_stats(callback: types.CallbackQuery):
         f"• Фаджр: {'✅' if prog and prog.get('fajr') else '⭕️'}\n"
         f"• Зухр: {'✅' if prog and prog.get('dhuhr') else '⭕️'}\n"
         f"• Аср: {'✅' if prog and prog.get('asr') else '⭕️'}\n"
-        f"• Магриб: {'✅' if prog.get('maghrib') else '⭕️'}\n"
-        f"• Иша: {'✅' if prog.get('isha') else '⭕️'}\n"
-        f"• Тахаджуд: {'✅' if prog.get('tahajjud') else '⭕️'}\n"
+        f"• Магриб: {'✅' if prog and prog.get('maghrib') else '⭕️'}\n"
+        f"• Иша: {'✅' if prog and prog.get('isha') else '⭕️'}\n"
+        f"• Тахаджуд: {'✅' if prog and prog.get('tahajjud') else '⭕️'}\n"
         f"• Чтение Корана: {prog.get('quran_pages', 0) if prog else 0} стр."
     )
 
@@ -193,15 +191,14 @@ async def cmd_stats(message: types.Message):
         f"• Аср: {'✅' if prog and prog.get('asr') else '⭕️'}\n"
         f"• Магриб: {'✅' if prog and prog.get('maghrib') else '⭕️'}\n"
         f"• Иша: {'✅' if prog and prog.get('isha') else '⭕️'}\n"
-        f"• Тахаджуд: {'✅' if prog.get('tahajjud') else '⭕️'}\n"
+        f"• Тахаджуд: {'✅' if prog and prog.get('tahajjud') else '⭕️'}\n"
         f"• Чтение Корана: {prog.get('quran_pages', 0) if prog else 0} стр."
     )
 
     await message.answer(stats_text, parse_mode="Markdown", reply_markup=get_main_menu_keyboard())
 
-# --- Настройка Web Server и Webhooks для Render ---
+# --- Настройка вебхуков и сервера для Render ---
 async def on_startup(bot: Bot):
-    # Устанавливаем вебхук в Telegram при запуске
     webhook_info = await bot.get_webhook_info()
     if webhook_info.url != WEBHOOK_URL:
         await bot.set_webhook(url=WEBHOOK_URL)
@@ -210,20 +207,17 @@ async def on_startup(bot: Bot):
 def main():
     app = web.Application()
     
-    # Добавляем корневой роут, чтобы Render видел, что веб-сервер отвечает 200 OK (проход Health Check)
     async def index(request):
         return web.Response(text="Amal365 Bot Web Service is running 🤍")
     
     app.router.add_get("/", index)
 
-    # Регистрируем обработчик вебхуков aiogram
     webhook_requests_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
     )
     webhook_requests_handler.register(app, path=WEBHOOK_PATH)
 
-    # Настраиваем жизненный цикл приложения
     setup_application(app, dp, bot=bot)
     dp.startup.register(on_startup)
 
