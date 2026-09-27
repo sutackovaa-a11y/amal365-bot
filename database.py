@@ -22,7 +22,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL and
 
 
 def get_user_local_date(user: Dict[str, Any]) -> str:
-    """Вычисляет локальную дату пользователя на основе его таймзоны."""
+    """Вычисляет локальную дату пользователя на основе таймзоны."""
     tz_str = user.get("timezone")
     if not tz_str or ZoneInfo is None:
         return datetime.now(timezone.utc).date().isoformat()
@@ -42,13 +42,14 @@ def get_or_create_user(telegram_id: int, username: str = None, first_name: str =
         if res.data:
             return res.data[0]
         
-        # Создаем нового пользователя
         new_user = {
             "telegram_id": telegram_id,
             "username": username,
             "first_name": first_name,
             "streak_days": 0,
             "pause_mode": False,
+            "city": "Не указан",
+            "current_level": "Аль-Фард",
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         ins = supabase.table("users").insert(new_user).execute()
@@ -79,28 +80,14 @@ def get_today_progress(user_id: int, date_str: str) -> Dict[str, Any]:
         if res.data:
             return res.data[0]
         
-        # Создаем запись на сегодня
         new_prog = {
             "user_id": user_id,
             "date": date_str,
-            "fajr_done": False,
-            "dhuhr_done": False,
-            "asr_done": False,
-            "maghrib_done": False,
-            "isha_done": False,
-            "tahajjud_done": False,
             "morning_adhkar_done": False,
             "evening_adhkar_done": False,
-            "salawat_count": 0,
-            "subhanallah_count": 0,
-            "alhamdulillah_count": 0,
-            "allahuakbar_count": 0,
-            "astaghfirullah_count": 0,
-            "la_ilaha_illallah_count": 0,
-            "quran_done": False,
-            "quran_pages": 0,
+            "zikr_count": 0,
             "activity_steps": 0,
-            "knowledge_done": False
+            "sport_minutes": 0
         }
         ins = supabase.table("daily_progress").insert(new_prog).execute()
         return ins.data[0] if ins.data else {}
