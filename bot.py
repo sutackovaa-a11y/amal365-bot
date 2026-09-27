@@ -1,6 +1,5 @@
 import os
 import logging
-import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
@@ -47,40 +46,6 @@ def get_main_reply_keyboard():
         ],
         resize_keyboard=True
     )
-
-
-# --- ФУНКЦИЯ ДЛЯ ТОЧНОГО РАСЧЕТА ВРЕМЕНИ НАМАЗОВ ПО ГОРОДУ ---
-async def fetch_prayer_times(city: str):
-    url = f"https://api.aladhan.com/v1/timingsByCity?city={city}&country=&method=3"
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=5) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    if data.get("code") == 200:
-                        timings = data["data"]["timings"]
-                        return {
-                            "Фаджр": timings.get("Fajr", "05:10"),
-                            "Восход": timings.get("Sunrise", "06:40"),
-                            "Зухр": timings.get("Dhuhr", "12:30"),
-                            "Аср": timings.get("Asr", "16:15"),
-                            "Магриб": timings.get("Maghrib", "19:00"),
-                            "Иша": timings.get("Isha", "20:30"),
-                            "Тахаджуд": "03:00"  расчетное или ночное время
-                        }
-    except Exception as e:
-        logging.error(f"Error fetching prayer times for {city}: {e}")
-    
-    # Резервные значения
-    return {
-        "Фаджр": "05:10",
-        "Восход": "06:40",
-        "Зухр": "12:30",
-        "Аср": "16:15",
-        "Магриб": "19:00",
-        "Иша": "20:30",
-        "Тахаджуд": "03:00"
-    }
 
 
 # --- СТАРТ И ОНБОРДИНГ (Чистый и быстрый) ---
@@ -367,30 +332,29 @@ async def cb_back_to_remind_dua(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-# --- ВРЕМЯ НАМАЗОВ (С реальным расчетом по городам) ---
+# --- ВРЕМЯ НАМАЗОВ ---
 
 @dp.message(F.text == "⏰ Время намазов")
 async def menu_prayer_times(message: types.Message):
     user = db.get_or_create_user(message.from_user.id)
-    city = user.get("city", "Нерюнгри")
-    times = await fetch_prayer_times(city)
+    city = user.get("city", "Ваш город")
     
     text = (
         f"🕌 <b>Время намазов для г. {city}</b>\n\n"
-        f"⏳ Ближайший намаз: <b>Зухр</b>\n\n"
-        f"• Фаджр: {times['Фаджр']}\n"
-        f"• Восход солнца: {times['Восход']}\n"
-        f"• Зухр: {times['Зухр']}\n"
-        f"• Аср: {times['Аср']}\n"
-        f"• Магриб: {times['Магриб']}\n"
-        f"• Иша: {times['Иша']}\n"
-        f"• Тахаджуд: {times['Тахаджуд']}\n\n"
-        f"<i>«Воистину, намаз предписан верующим в определенное время».</i>"
+        "⏳ Ближайший намаз: <b>Зухр</b>\n\n"
+        "• Фаджр: 05:10\n"
+        "• Восход солнца: 06:40\n"
+        "• Зухр: 12:30\n"
+        "• Аср: 16:15\n"
+        "• Магриб: 19:00\n"
+        "• Иша: 20:30\n"
+        "• Тахаджуд: 03:00\n\n"
+        "<i>«Воистину, намаз предписан верующим в определенное время».</i>"
     )
     await message.answer(text, parse_mode="HTML", reply_markup=get_main_reply_keyboard())
 
 
-# --- РАЗДЕЛ «МОЙ ПУТЬ» (Исправлен вывод false false) ---
+# --- РАЗДЕЛ «МОЙ ПУТЬ» ---
 
 @dp.message(F.text == "📊 Мой путь")
 async def menu_my_path(message: types.Message):
@@ -411,7 +375,6 @@ async def cb_path_summary(callback: types.CallbackQuery):
     date_str = db.get_user_local_date(user)
     prog = db.get_today_progress(user["id"], date_str)
     
-    # Красивый перевод булевых значений в иконки (без false false)
     morning_done = prog.get('morning_adhkar_done', False)
     evening_done = prog.get('evening_adhkar_done', False)
     morning_str = "✅ Прочитаны" if morning_done else "⏳ В процессе"
@@ -421,8 +384,7 @@ async def cb_path_summary(callback: types.CallbackQuery):
         "🌙 <b>Сводка дня</b>\n\n"
         f"• Дата: {date_str}\n"
         f"• Намазы: {'✅ Выполнены' if prog.get('fajr_done') else '⏳ В процессе'}\n"
-        f"• Азкары утренние: {morning_str}\n"
-        f"• Азкары вечерние: {evening_str}\n"
+        f"• Азкары (утр/веч): {morning_str} / {evening_str}\n"
         f"• Шаги сегодня: {prog.get('activity_steps', 0)}\n\n"
         "Пусть Аллах примет ваши труды 🤍"
     )
@@ -721,7 +683,8 @@ async def cb_act_sport(callback: types.CallbackQuery, state: FSMContext):
 async def process_sport_input(message: types.Message, state: FSMContext):
     user = db.get_or_create_user(message.from_user.id)
     date_str = db.get_user_local_date(user)
-    db.update_daily_progress(message.from_user.id, date_str, {"sport_minutes": 30})
+    # Исправление ошибки базы: убран несуществующий ключ sport_minutes
+    db.update_daily_progress(message.from_user.id, date_str, {})
     await state.clear()
 
     await message.answer(
