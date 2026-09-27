@@ -48,51 +48,23 @@ def get_main_reply_keyboard():
     )
 
 
-# --- СТАРТ И ОНБОРДИНГ ---
+# --- СТАРТ И ОНБОРДИНГ (Чистый и быстрый) ---
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     db.get_or_create_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
     
-    intro_text = (
-        "🌙 <b>Amal365</b>\n\n"
-        "Ваш личный спутник на пути к постоянству в благих делах.\n"
-        "Помогает бережно и регулярно совершать поклонения, вести учёт активности и укреплять духовную дисциплину."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✨ Начать", callback_data="onboarding_welcome")]
-    ])
-    await message.answer(intro_text, parse_mode="HTML", reply_markup=kb)
-
-
-@dp.callback_query(F.data == "onboarding_welcome")
-async def cb_welcome(callback: types.CallbackQuery, state: FSMContext):
     text = (
         "Ассаляму алейкум ва рахматуллахи ва баракатух 🌙\n\n"
         "Добро пожаловать в <b>Amal365</b>.\n\n"
-        "Amal365 помогает сохранять постоянство в благих делах и двигаться вперёд шаг за шагом.\n\n"
-        "Ваши данные используются только для работы бота и остаются конфиденциальными.\n\n"
+        "Мы бережно защищаем ваши данные и используем их исключительно для персонального сопровождения на пути к постоянству в благих делах.\n\n"
         "Пусть Аллах дарует пользу и баракат в этом пути 🤍"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✨ Начнём путь с Бисмиллях", callback_data="onboarding_policy")]
+        [InlineKeyboardButton(text="✨ Начать с Бисмиллях", callback_data="policy_agreed")],
+        [InlineKeyboardButton(text="❌ Выйти", callback_data="policy_exit")]
     ])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-
-
-@dp.callback_query(F.data == "onboarding_policy")
-async def cb_policy(callback: types.CallbackQuery, state: FSMContext):
-    text = (
-        "📜 <b>Политика конфиденциальности и бережного отношения</b>\n\n"
-        "Мы надежно защищаем ваши данные и используем их исключительно для персонального сопровождения."
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✅ Согласен(а)", callback_data="policy_agreed"),
-            InlineKeyboardButton(text="❌ Выйти", callback_data="policy_exit")
-        ]
-    ])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
 @dp.callback_query(F.data == "policy_exit")
@@ -123,7 +95,7 @@ async def cb_ask_city(callback: types.CallbackQuery, state: FSMContext):
         "Напишите название вашего населенного пункта на кириллице (например: <i>Нерюнгри</i>, <i>Бишкек</i>, <i>Казань</i>, <i>Алматы</i>):"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="onboarding_policy")]
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="policy_agreed")]
     ])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
