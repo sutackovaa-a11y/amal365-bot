@@ -1,9 +1,10 @@
 import os
-import asyncio
 import logging
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
 from dotenv import load_dotenv
 
 from database import (
@@ -17,6 +18,16 @@ from database import (
 
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+
+# Render автоматически передает PORT, по умолчанию ставим 8080
+PORT = int(os.getenv("PORT", 8080))
+
+# Вставьте ваш реальный URL от Render в переменные среды (например: https://your-app.onrender.com)
+# Либо Render сам передает хост, но лучше прописать RENDER_EXTERNAL_URL в Environment Variables на Render
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL", "")
+
+WEBHOOK_PATH = f"/bot/{BOT_TOKEN}"
+WEBHOOK_URL = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
 
 if not BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан в переменных окружения (.env)")
@@ -148,8 +159,6 @@ async def cb_save_prayer(callback: types.CallbackQuery):
     
     save_prayer(telegram_id, prayer_name)
     await callback.answer(f"Намаз «{prayer_name}» отмечен! 🤍")
-    
-    # Возвращаем в меню намазов с обновленным статусом
     await cb_prayers_menu(callback)
 
 @dp.callback_query(F.data == "menu_main")
@@ -184,15 +193,42 @@ async def cmd_stats(message: types.Message):
         f"• Аср: {'✅' if prog and prog.get('asr') else '⭕️'}\n"
         f"• Магриб: {'✅' if prog and prog.get('maghrib') else '⭕️'}\n"
         f"• Иша: {'✅' if prog and prog.get('isha') else '⭕️'}\n"
-        f"• Тахаджуд: {'✅' if prog and prog.get('tahajjud') else '⭕️'}\n"
+        f"• Тахаджуд: {'✅' if prog.get('tahajjud') else '⭕️'}\n"
         f"• Чтение Корана: {prog.get('quran_pages', 0) if prog else 0} стр."
     )
 
     await message.answer(stats_text, parse_mode="Markdown", reply_markup=get_main_menu_keyboard())
 
-async def main():
-    print("Бот Amal365 запущен и готов к работе...")
-    await dp.start_polling(bot)
+# --- Настройка Web Server и Webhooks для Render ---
+async def on_startup(bot: Bot):
+    # Устанавливаем вебхук в Telegram при запуске
+    webhook_info = await bot.get_webhook_info()
+    if webhook_info.url != WEBHOOK_URL:
+        await bot.set_webhook(url=WEBHOOK_URL)
+        logging.info(f"Webhook set to: {WEBHOOK_URL}")
+
+def main():
+    app = web.Application()
+    
+    # Добавляем корневой роут, чтобы Render видел, что веб-сервер отвечает 200 OK (проход Health Check)
+    async def index(request):
+        return web.Response(text="Amal365 Bot Web Service is running 🤍")
+    
+    app.router.add_get("/", index)
+
+    # Регистрируем обработчик вебхуков aiogram
+    webhook_requests_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+
+    # Настраиваем жизненный цикл приложения
+    setup_application(app, dp, bot=bot)
+    dp.startup.register(on_startup)
+
+    logging.info(f"Starting web server on port {PORT}...")
+    web.run_app(app, host="0.0.0.0", port=PORT)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
