@@ -48,10 +48,12 @@ def get_or_create_user(telegram_id: int, username: str = None, first_name: str =
             "first_name": first_name,
             "streak_days": 0,
             "pause_mode": False,
+            "pause_reason": None,
             "city": "Не указан",
             "current_level": "Аль-Фард",
             "active_tasbih_count": 0,
             "active_tasbih_type": "subhanallah",
+            "active_tasbih_goal": 33,
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         ins = supabase.table("users").insert(new_user).execute()
