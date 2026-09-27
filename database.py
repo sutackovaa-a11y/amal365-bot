@@ -28,7 +28,7 @@ def get_user_local_date(user: Dict[str, Any]) -> str:
         return datetime.now(timezone.utc).date().isoformat()
     try:
         local_tz = ZoneInfo(tz_str)
-    except Exception as e:
+    except Exception:
         local_tz = timezone.utc
     return datetime.now(local_tz).date().isoformat()
 
@@ -50,6 +50,8 @@ def get_or_create_user(telegram_id: int, username: str = None, first_name: str =
             "pause_mode": False,
             "city": "Не указан",
             "current_level": "Аль-Фард",
+            "active_tasbih_count": 0,
+            "active_tasbih_type": "subhanallah",
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         ins = supabase.table("users").insert(new_user).execute()
@@ -83,11 +85,23 @@ def get_today_progress(user_id: int, date_str: str) -> Dict[str, Any]:
         new_prog = {
             "user_id": user_id,
             "date": date_str,
+            "fajr_done": False,
+            "dhuhr_done": False,
+            "asr_done": False,
+            "maghrib_done": False,
+            "isha_done": False,
+            "tahajjud_done": False,
             "morning_adhkar_done": False,
             "evening_adhkar_done": False,
-            "zikr_count": 0,
+            "salawat_count": 0,
+            "subhanallah_count": 0,
+            "alhamdulillah_count": 0,
+            "allahuakbar_count": 0,
+            "astaghfirullah_count": 0,
             "activity_steps": 0,
-            "sport_minutes": 0
+            "sport_minutes": 0,
+            "quran_pages": 0,
+            "knowledge_done": False
         }
         ins = supabase.table("daily_progress").insert(new_prog).execute()
         return ins.data[0] if ins.data else {}
