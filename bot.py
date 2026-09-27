@@ -132,9 +132,10 @@ async def cb_mode_saved(callback: types.CallbackQuery, state: FSMContext):
     db.update_user(callback.from_user.id, {"current_level": selected_mode})
 
     text = (
-        f"🤍 <b>Режим «{selected_mode}» успешно активирован!</b>\n\n"
-        "Добро пожаловать в семью Amal365. Ваш персональный путеводитель настроен. "
-        "Используйте нижнее меню для управления."
+        f"🤍 <b>Альхамдулиллах, намерение оформлено. Ритм «{selected_mode}» бережно настроен.</b>\n\n"
+        "Пусть этот путь принесёт в ваше сердце свет, баракат и глубокую сакину (умиротворение).\n\n"
+        "Здесь нет места гонке и тревоге — только вы, ваши искренние стремления и милость Всевышнего.\n\n"
+        "Панель внизу всегда рядом, чтобы тихо и деликатно сопровождать вас изо дня в день."
     )
     await callback.message.answer(text, parse_mode="HTML", reply_markup=get_main_reply_keyboard())
     await callback.message.delete()
