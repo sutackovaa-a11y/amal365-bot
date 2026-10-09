@@ -99,35 +99,55 @@ def get_main_keyboard():
     )
 
 PRAYER_TIMES = {
+    "Тахаджуд": "03:30",
     "Фаджр": "05:03",
     "Восход солнца": "06:54",
     "Зухр": "12:30",
     "Аср": "15:19",
     "Магриб": "18:04",
-    "Иша": "19:48",
-    "Тахаджуд": "03:30"
+    "Иша": "19:48"
 }
 
-def get_next_prayer():
+def get_next_prayer_info():
     local_now = get_local_now()
     current_time_str = local_now.strftime("%H:%M")
-    # Основные намазы для расчета ближайшего
+    current_minutes = local_now.hour * 60 + local_now.minute
+    
     main_prayers = [
         ("Фаджр", "05:03"),
-        ("Восход солнца", "06:54"),
         ("Зухр", "12:30"),
         ("Аср", "15:19"),
         ("Магриб", "18:04"),
         ("Иша", "19:48")
     ]
-    next_prayer = main_prayers[0][0]
+    
+    next_name = main_prayers[0][0]
+    next_time = main_prayers[0][1]
+    
     for name, p_time in main_prayers:
         if current_time_str < p_time:
-            next_prayer = name
+            next_name = name
+            next_time = p_time
             break
     else:
-        next_prayer = main_prayers[0][0]
-    return next_prayer
+        next_name = main_prayers[0][0]
+        next_time = main_prayers[0][1]
+        
+    p_hour, p_min = map(int, next_time.split(":"))
+    target_minutes = p_hour * 60 + p_min
+    diff = target_minutes - current_minutes
+    if diff < 0:
+        diff += 24 * 60
+        
+    hours = diff // 60
+    minutes = diff % diff if False else diff % 60
+    
+    if hours > 0:
+        countdown = f"осталось {hours} ч. {minutes} мин."
+    else:
+        countdown = f"осталось {minutes} мин."
+        
+    return next_name, next_time, countdown
 
 # === ОНБОРДИНГ И СТАРТ ===
 @router.message(F.text == "/start")
@@ -249,7 +269,7 @@ async def select_rhythm(callback: types.CallbackQuery):
     await callback.message.answer("Главное меню активировано:", reply_markup=get_main_keyboard())
     await callback.answer()
 
-# === НАМАЗЫ И ОТМЕТКИ ===
+# === ВРЕМЯ НАМАЗОВ И РАСПИСАНИЕ (ТАХАДЖУД СВЕРХУ + ОБРАТНЫЙ ОТСЧЕТ) ===
 @router.message(F.text == "⏰ Время намазов")
 async def cmd_prayer_times(message: types.Message):
     user_id = message.from_user.id
@@ -260,18 +280,18 @@ async def cmd_prayer_times(message: types.Message):
     conn.close()
     city = row[0] if row else "Нерюнгри"
     
-    next_p = get_next_prayer()
+    next_p, next_t, countdown = get_next_prayer_info()
     
     text = (
         f"🕌 **Время намазов для г. {city}**\n\n"
-        f"⏳ Ближайший намаз: **{next_p}**\n\n"
+        f"⏳ Ближайший намаз: **{next_p}** ({countdown})\n\n"
+        f"• Тахаджуд (ночной рубеж): {PRAYER_TIMES['Тахаджуд']}\n"
         f"• Фаджр: {PRAYER_TIMES['Фаджр']}\n"
         f"• Восход солнца: {PRAYER_TIMES['Восход солнца']}\n"
         f"• Зухр: {PRAYER_TIMES['Зухр']}\n"
         f"• Аср: {PRAYER_TIMES['Аср']}\n"
         f"• Магриб: {PRAYER_TIMES['Магриб']}\n"
-        f"• Иша: {PRAYER_TIMES['Иша']}\n"
-        f"• Тахаджуд (ночной рубеж): {PRAYER_TIMES['Тахаджуд']}\n\n"
+        f"• Иша: {PRAYER_TIMES['Иша']}\n\n"
         f"«Воистину, намаз предписан верующим в определенное время»."
     )
     
@@ -358,7 +378,7 @@ async def toggle_prayer(callback: types.CallbackQuery):
     else:
         await callback.answer("Статус намаза обновлен! 🤍")
 
-# === ПОМИНАНИЯ И ДУА (Свободные счетчики) ===
+# === ПОМИНАНИЯ И ДУА ===
 @router.message(F.text == "📿 Поминания и дуа")
 async def cmd_duas(message: types.Message):
     markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -656,7 +676,7 @@ async def save_quran(message: types.Message, state: FSMContext):
     conn.close()
     
     await state.clear()
-    await message.answer(f"Машаллах! Записано чтение Корана: **{text}**. 🤍", parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await message.answer(f"Машаллах! Записано чтение Корана: **{text}**. 🤍", parse_mode="Markdown")
 
 @router.callback_query(F.data == "act_books")
 async def act_books(callback: types.CallbackQuery, state: FSMContext):
@@ -682,7 +702,7 @@ async def save_books(message: types.Message, state: FSMContext):
     conn.close()
     
     await state.clear()
-    await message.answer(f"Записано: **{val}** страниц книг. 🤍", parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await message.answer(f"Записано: **{val}** страниц книг. 🤍", parse_mode="Markdown")
 
 @router.callback_query(F.data == "act_steps")
 async def act_steps(callback: types.CallbackQuery, state: FSMContext):
@@ -708,7 +728,7 @@ async def save_steps(message: types.Message, state: FSMContext):
     conn.close()
     
     await state.clear()
-    await message.answer(f"Записано: **{val}** шагов. 🤍", parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await message.answer(f"Записано: **{val}** шагов. 🤍", parse_mode="Markdown")
 
 @router.callback_query(F.data == "act_sport")
 async def act_sport(callback: types.CallbackQuery, state: FSMContext):
@@ -734,9 +754,8 @@ async def save_sport(message: types.Message, state: FSMContext):
     conn.close()
     
     await state.clear()
-    await message.answer(f"Записано: **{val}** минут спорта. 🤍", parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await message.answer(f"Записано: **{val}** минут спорта. 🤍", parse_mode="Markdown")
 
-# Обработка вечернего чек-ина (смайлики 😇, 🙂, 🥺)
 @router.callback_query(F.data.startswith("evening_mood_"))
 async def process_evening_mood(callback: types.CallbackQuery):
     mood = callback.data.split("_")[2]
@@ -745,7 +764,7 @@ async def process_evening_mood(callback: types.CallbackQuery):
         text = "Альхамдулиллах! Сегодня вы прошли этот путь с благодарением в сердце. Каждое ваше усилие записано у Творца, и пусть этот свет сопровождает вас и завтра 🤍."
     elif mood == "neutral":
         text = "Тихий и спокойный день тоже полон скрытой мудрости. Главное — ваше сердце помнит о Нем, и каждое малое движение навстречу милости Всевышнего ценно 🤍."
-    else: # hard / 🥺
+    else:
         text = "Даже в самые сложные и уставшие моменты вы не теряете связь со своим Творцом. Аллах видит ваше терпение и труд. Позвольте себе отдохнуть, ведь искреннее обращение к Нему в усталости выше тысяч слов 🤍."
         
     try:
@@ -862,14 +881,14 @@ async def end_pause(callback: types.CallbackQuery):
         pass
     await callback.answer()
 
-# === ФОНОВЫЙ ПУЛЬС: НАМАЗЫ, ХАДИСЫ, ТАХАДЖУД И ВЕЧЕРНИЙ ЧЕК-ИН ===
+# === ФОНОВЫЙ ПУЛЬС И УМНЫЕ УВЕДОМЛЕНИЯ С РОТАЦИЕЙ ===
 async def background_scheduler(bot: Bot):
     while True:
         try:
             now = get_local_now()
             current_time_str = now.strftime("%H:%M")
             today = now.strftime("%Y-%m-%d")
-            weekday = now.weekday() # 4 - пятница (Джума)
+            weekday = now.weekday()
             
             conn = sqlite3.connect(DB_NAME)
             cursor = conn.cursor()
@@ -897,14 +916,13 @@ async def background_scheduler(bot: Bot):
                     minus_5 = (p_dt - timedelta(minutes=5)).strftime("%H:%M")
                     plus_20 = (p_dt + timedelta(minutes=20)).strftime("%H:%M")
                     
-                    # 1. Напоминание за 5 минут с нейтральными глубокими текстами, аятами и хадисами
                     if current_time_str == minus_5:
                         cursor.execute("""
                             SELECT 1 FROM notification_log 
                             WHERE user_id = ? AND date = ? AND prayer_key = ? AND notification_type = '5min'
                         """, (user_id, today, p_key))
                         if not cursor.fetchone():
-                            if weekday == 4: # Пятница (Джума)
+                            if weekday == 4:
                                 sense_text = (
                                     f"🕌 **Приближается благословенный намаз: {p_name}** (через 5 минут).\n\n"
                                     "✨ *Пятница (Джума):* Пророк ﷺ сказал:\n"
@@ -941,9 +959,8 @@ async def background_scheduler(bot: Bot):
                                 """, (user_id, today, p_key))
                                 conn.commit()
                             except Exception as e:
-                                logging.error(f"Failed to send 5min reminder to {user_id}: {e}")
+                                logging.error(f"Failed to send 5min reminder: {e}")
                     
-                    # 2. Мягкое напоминание через 20 минут
                     if current_time_str == plus_20:
                         cursor.execute(f"SELECT {p_done_col} FROM daily_progress WHERE user_id = ? AND date = ?", (user_id, today))
                         row = cursor.fetchone()
@@ -970,9 +987,8 @@ async def background_scheduler(bot: Bot):
                                     """, (user_id, today, p_key))
                                     conn.commit()
                                 except Exception as e:
-                                    logging.error(f"Failed to send 20min reminder to {user_id}: {e}")
+                                    logging.error(f"Failed to send 20min reminder: {e}")
                 
-                # 3. Вопрос после Иша о Тахаджуде (в 20:30)
                 if current_time_str == "20:30":
                     cursor.execute("""
                         SELECT 1 FROM notification_log 
@@ -993,7 +1009,6 @@ async def background_scheduler(bot: Bot):
                         except Exception as e:
                             logging.error(f"Failed to send tahajjud prompt: {e}")
 
-                # 4. Вечерний чек-ин настроения (в 21:30)
                 if current_time_str == "21:30":
                     cursor.execute("""
                         SELECT 1 FROM notification_log 
