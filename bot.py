@@ -27,10 +27,13 @@ if not BOT_TOKEN:
 bot = Bot(token=BOT_TOKEN) if BOT_TOKEN else None
 dp = Dispatcher(storage=MemoryStorage())
 
+# ==================== FSM СОСТОЯНИЯ ====================
 class OnboardingStates(StatesGroup):
     waiting_for_city = State()
 
 class ActivityStates(StatesGroup):
+    waiting_for_quran = State()
+    waiting_for_books = State()
     waiting_for_steps = State()
     waiting_for_sport = State()
 
@@ -71,7 +74,6 @@ async def fetch_prayer_times(city: str):
     clean_city = city.lower().strip()
     api_city = CITY_MAPPING.get(clean_city, city)
     
-    # API автоматически возвращает актуальное расписание на текущий день для выбранного города
     url = f"https://api.aladhan.com/v1/timingsByCity?city={api_city}&country=&method=3"
     try:
         async with aiohttp.ClientSession() as session:
@@ -91,7 +93,6 @@ async def fetch_prayer_times(city: str):
     except Exception as e:
         logging.error(f"Error fetching prayer times for {city}: {e}")
     
-    # Динамический резерв на случай сбоя сети
     return {
         "Фаджр": "04:40",
         "Восход": "06:19",
@@ -116,7 +117,7 @@ def get_next_prayer(timings: dict):
     return "Фаджр (завтра)"
 
 
-# --- СТАРТ И ОНБОРДИНГ (Чистый и быстрый) ---
+# --- СТАРТ И ОНБОРДИНГ ---
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -124,8 +125,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
     
     text = (
         "Ассаляму алейкум ва рахматуллахи ва баракатух 🌙\n\n"
-        "Добро пожаловать в <b>Amal365</b>.\n\n"
-        "Мы бережно защищаем ваши данные и используем их исключительно для персонального сопровождения на пути к постоянству в благих делах.\n\n"
+        "Добро пожаловать в <b>Amal365</b> — ваш бережный цифровой спутник на пути постоянства и поклонения.\n\n"
         "Пусть Аллах дарует пользу и баракат в этом пути 🤍"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -209,7 +209,7 @@ async def cb_mode_saved(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.delete()
 
 
-# --- РАЗДЕЛ «ПОМИНАНИЯ И ДУА» ---
+# ==================== РАЗДЕЛ «ПОМИНАНИЯ И ДУА» (3 ОТДЕЛЬНЫЕ КНОПКИ) ====================
 
 @dp.message(F.text == "📿 Поминания и дуа")
 async def menu_remind_dua(message: types.Message):
@@ -219,35 +219,50 @@ async def menu_remind_dua(message: types.Message):
         "Выберите нужное направление:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📿 Зикр и салават (Тасбих)", callback_data="submenu_zikr")],
-        [InlineKeyboardButton(text="📖 Утренние и вечерние азкары", callback_data="submenu_adhkar")]
+        [InlineKeyboardButton(text="📿 Тасбих", callback_data="rem_tasbih")],
+        [InlineKeyboardButton(text="✨ Салават", callback_data="rem_salawat")],
+        [InlineKeyboardButton(text="🌅 Утренние азкары", callback_data="rem_azkar_morning"),
+         InlineKeyboardButton(text="🌆 Вечерние азкары", callback_data="rem_azkar_evening")]
     ])
     await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
 
-@dp.callback_query(F.data == "submenu_zikr")
-async def cb_zikr_main(callback: types.CallbackQuery):
+@dp.callback_query(F.data == "back_to_remind_dua")
+async def cb_back_to_remind_dua(callback: types.CallbackQuery):
     text = (
-        "📿 <b>Зикр и салават</b>\n\n"
-        "Выберите желаемую цель для поминания:"
+        "📿 <b>Поминания и дуа</b>\n\n"
+        "Выберите нужное направление:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="3️⃣3️⃣ Цель: 33 раза", callback_data="set_goal_33"),
-         InlineKeyboardButton(text="9️⃣9️⃣ Цель: 99 раз", callback_data="set_goal_99")],
-        [InlineKeyboardButton(text="♾️ Без фиксированной цели", callback_data="set_goal_unlimited")],
+        [InlineKeyboardButton(text="📿 Тасбих", callback_data="rem_tasbih")],
+        [InlineKeyboardButton(text="✨ Салават", callback_data="rem_salawat")],
+        [InlineKeyboardButton(text="🌅 Утренние азкары", callback_data="rem_azkar_morning"),
+         InlineKeyboardButton(text="🌆 Вечерние азкары", callback_data="rem_azkar_evening")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+# --- 1. ТАСБИХ (Цели: 7, 33, 99, без цели + автопереход + мгновенная фиксация) ---
+@dp.callback_query(F.data == "rem_tasbih")
+async def rem_tasbih(callback: types.CallbackQuery):
+    text = (
+        "📿 <b>Тасбих</b>\n\n"
+        "Выберите желаемую цель для повторения:"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="7 раз", callback_data="tasbih_target_7"),
+         InlineKeyboardButton(text="33 раза", callback_data="tasbih_target_33"),
+         InlineKeyboardButton(text="99 раз", callback_data="tasbih_target_99")],
+        [InlineKeyboardButton(text="♾️ Без цели (свободный счет)", callback_data="tasbih_target_none")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_remind_dua")]
     ])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-@dp.callback_query(F.data.startswith("set_goal_"))
-async def cb_set_tasbih_goal(callback: types.CallbackQuery):
-    goal_map = {
-        "set_goal_33": 33,
-        "set_goal_99": 99,
-        "set_goal_unlimited": 9999
-    }
-    goal = goal_map.get(callback.data, 33)
+@dp.callback_query(F.data.startswith("tasbih_target_"))
+async def cb_set_tasbih_target(callback: types.CallbackQuery):
+    target_raw = callback.data.split("_")[2]
+    goal = 999999 if target_raw == "none" else int(target_raw)
     db.update_user(callback.from_user.id, {"active_tasbih_goal": goal, "active_tasbih_count": 0, "active_tasbih_type": "subhanallah"})
     await cb_tasbih_counter(callback)
 
@@ -263,22 +278,21 @@ async def cb_tasbih_counter(callback: types.CallbackQuery):
         "subhanallah": "Субханаллах (سبحان الله)",
         "alhamdulillah": "Альхамдулиллях (الحمد لله)",
         "allahuakbar": "Аллаху Акбар (الله أكبر)",
-        "astaghfirullah": "Астагфируллах (أستغفر الله)",
-        "salawat": "Салават на Пророка ﷺ"
+        "astaghfirullah": "Астагфируллах (أستغفر الله)"
     }
 
-    goal_str = str(goal) if goal < 9999 else "∞"
+    goal_str = str(goal) if goal < 999990 else "∞"
 
     text = (
-        f"📿 <b>Интерактивный Тасбих</b>\n\n"
-        f"Этап: <b>{names.get(current_type, 'Зикр')}</b>\n"
+        f"📿 <b>Тасбих</b>\n\n"
+        f"Зикр: <b>{names.get(current_type, 'Субханаллах')}</b>\n"
         f"Счетчик: <b>{count} / {goal_str}</b>\n\n"
-        "Нажимайте кнопку ниже с каждым произнесением:"
+        "Каждый клик мгновенно сохраняется в вашей сводке дня 🤍"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Сделать поминание (+1)", callback_data="tasbih_inc")],
+        [InlineKeyboardButton(text="➕ Нажать (+1)", callback_data="tasbih_inc")],
         [InlineKeyboardButton(text="🔄 Сбросить", callback_data="tasbih_reset")],
-        [InlineKeyboardButton(text="⬅️ Назад к выбору цели", callback_data="submenu_zikr")]
+        [InlineKeyboardButton(text="⬅️ К выбору целей", callback_data="rem_tasbih")]
     ])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
@@ -290,19 +304,25 @@ async def cb_tasbih_increment(callback: types.CallbackQuery):
     current_type = user.get("active_tasbih_type", "subhanallah")
     goal = user.get("active_tasbih_goal", 33)
 
-    if count >= goal:
-        stages = ["subhanallah", "alhamdulillah", "allahuakbar", "astaghfirullah", "salawat"]
+    # Мгновенная фиксация в базе данных
+    date_str = db.get_user_local_date(user)
+    prog = db.get_today_progress(user["id"], date_str)
+    current_total_tasbih = prog.get("tasbih_count", 0) + 1
+    db.update_daily_progress(user["id"], date_str, {"tasbih_count": current_total_tasbih})
+
+    if count >= goal and goal < 999990:
+        stages = ["subhanallah", "alhamdulillah", "allahuakbar", "astaghfirullah"]
         try:
             next_idx = stages.index(current_type) + 1
             if next_idx < len(stages):
                 current_type = stages[next_idx]
                 count = 0
                 db.update_user(callback.from_user.id, {"active_tasbih_type": current_type, "active_tasbih_count": 0})
-                await callback.answer("Альхамдулиллах! Переходим к следующему поминанию 🤍", show_alert=True)
+                await callback.answer("Цель достигнута! Плавный автопереход к следующему зикру 🤍", show_alert=True)
             else:
-                db.update_user(callback.from_user.id, {"active_tasbih_type": "subhanallah", "active_tasbih_count": 0, "active_tasbih_goal": 33})
+                db.update_user(callback.from_user.id, {"active_tasbih_type": "subhanallah", "active_tasbih_count": 0})
                 await callback.answer("Круг поминаний успешно завершен! Пусть Аллах примет его 🤍", show_alert=True)
-                return await cb_zikr_main(callback)
+                return await cb_tasbih_counter(callback)
         except ValueError:
             pass
     else:
@@ -318,35 +338,89 @@ async def cb_tasbih_reset(callback: types.CallbackQuery):
     await cb_tasbih_counter(callback)
 
 
-@dp.callback_query(F.data == "submenu_adhkar")
-async def cb_adhkar_menu(callback: types.CallbackQuery):
+# --- 2. САЛАВАТ (Цели: 33, 100, без цели + пятничный акцент + мгновенная фиксация) ---
+@dp.callback_query(F.data == "rem_salawat")
+async def rem_salawat(callback: types.CallbackQuery):
     text = (
-        "📖 <b>Утренние и вечерние азкары</b>\n\n"
-        "Выберите нужное время суток:"
+        "✨ <b>Салават на Пророка ﷺ</b>\n\n"
+        "«Кто призовет на меня благословение один раз, тому Аллах ниспошлет благословение десять раз» (Муслим).\n"
+        "Особенно благословенно чтение в пятницу (Джума).\n\n"
+        "Выберите цель:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🌅 Утренние азкары", callback_data="adhkar_morning")],
-        [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="adhkar_evening")],
+        [InlineKeyboardButton(text="33 раза", callback_data="salawat_target_33"),
+         InlineKeyboardButton(text="100 раз", callback_data="salawat_target_100")],
+        [InlineKeyboardButton(text="♾️ Без цели (свободный счет)", callback_data="salawat_target_none")],
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_remind_dua")]
     ])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-@dp.callback_query(F.data == "adhkar_morning")
+@dp.callback_query(F.data.startswith("salawat_target_"))
+async def cb_set_salawat_target(callback: types.CallbackQuery):
+    target_raw = callback.data.split("_")[2]
+    goal = 999999 if target_raw == "none" else int(target_raw)
+    db.update_user(callback.from_user.id, {"active_salawat_goal": goal, "active_salawat_count": 0})
+    await cb_salawat_counter(callback)
+
+
+@dp.callback_query(F.data == "salawat_counter_view")
+async def cb_salawat_counter(callback: types.CallbackQuery):
+    user = db.get_or_create_user(callback.from_user.id)
+    count = user.get("active_salawat_count", 0)
+    goal = user.get("active_salawat_goal", 33)
+    goal_str = str(goal) if goal < 999990 else "∞"
+
+    text = (
+        "✨ <b>Салават на Пророка ﷺ</b>\n\n"
+        f"Счетчик: <b>{count} / {goal_str}</b>\n\n"
+        "Каждое нажатие мгновенно сохраняется в базе данных 🤍"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="➕ Нажать Салават (+1)", callback_data="salawat_inc")],
+        [InlineKeyboardButton(text="🔄 Сбросить", callback_data="salawat_reset")],
+        [InlineKeyboardButton(text="⬅️ К выбору целей", callback_data="rem_salawat")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "salawat_inc")
+async def cb_salawat_increment(callback: types.CallbackQuery):
+    user = db.get_or_create_user(callback.from_user.id)
+    count = user.get("active_salawat_count", 0) + 1
+    db.update_user(callback.from_user.id, {"active_salawat_count": count})
+
+    # Мгновенная фиксация в сводке дня
+    date_str = db.get_user_local_date(user)
+    prog = db.get_today_progress(user["id"], date_str)
+    current_total_salawat = prog.get("salawat_count", 0) + 1
+    db.update_daily_progress(user["id"], date_str, {"salawat_count": current_total_salawat})
+
+    await cb_salawat_counter(callback)
+
+
+@dp.callback_query(F.data == "salawat_reset")
+async def cb_salawat_reset(callback: types.CallbackQuery):
+    db.update_user(callback.from_user.id, {"active_salawat_count": 0})
+    await callback.answer("Счетчик салаватов сброшен.", show_alert=True)
+    await cb_salawat_counter(callback)
+
+
+# --- 3. АЗКАРЫ (Раздельные: Утренние и Вечерние) ---
+@dp.callback_query(F.data == "rem_azkar_morning")
 async def cb_morning_adhkar(callback: types.CallbackQuery):
     text = (
-        "🌅 <b>Утренние азкары (Минимум защиты)</b>\n\n"
+        "🌅 <b>Утренние азкары</b> (после Фаджра)\n\n"
         "• <b>Аят аль-Курси</b> (Сура «Корова», 255) — 1 раз.\n"
         "• <b>Три последние суры</b> («Аль-Ихляс», «Аль-Фалак», «Ан-Нас») — по 3 раза.\n\n"
         "• <b>Формула начала утра:</b>\n"
-        "<i>«Асбахна ва асбаха аль-мульку лилляхи рабби ль-’алямин. Аллахумма инни ас’алюка хайра хаза ль-явми фатхаху ва насраху ва нураху ва барактаху ва худаху...»</i>\n\n"
+        "<i>«Асбахна ва асбаха аль-мульку лилляхи рабби ль-’алямин...»</i>\n\n"
         "• <b>Сейид аль-истигфар:</b>\n"
-        "<i>«Аллахумма Анта Рабби, ля иляха илля Анта, халяктани ва ана ’абдука...»</i>\n\n"
-        "• <b>Короткая формула:</b> Чтение «Субханаллаһ ва бихамдиһ» по 100 раз."
+        "<i>«Аллахумма Анта Рабби, ля иляха илля Анта...»</i>"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Отметить как прочитанные", callback_data="mark_morning_done")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="submenu_adhkar")]
+        [InlineKeyboardButton(text="✅ Отметить как выполненные", callback_data="mark_morning_done")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_remind_dua")]
     ])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
@@ -356,24 +430,23 @@ async def cb_mark_morning(callback: types.CallbackQuery):
     user = db.get_or_create_user(callback.from_user.id)
     date_str = db.get_user_local_date(user)
     db.update_daily_progress(callback.from_user.id, date_str, {"morning_adhkar_done": True})
-    await callback.answer("Утренние азкары отмечены выполненными! 🤍", show_alert=True)
-    await cb_adhkar_menu(callback)
+    await callback.answer("Утренние азкары успешно зафиксированы в сводке дня! 🤍", show_alert=True)
+    await cb_back_to_remind_dua(callback)
 
 
-@dp.callback_query(F.data == "adhkar_evening")
+@dp.callback_query(F.data == "rem_azkar_evening")
 async def cb_evening_adhkar(callback: types.CallbackQuery):
     text = (
-        "🌙 <b>Вечерние азкары (Минимум защиты)</b>\n\n"
+        "🌆 <b>Вечерние азкары</b> (после Магриба)\n\n"
         "• <b>Аят аль-Курси</b> — 1 раз.\n"
         "• <b>Три последние суры</b> («Аль-Ихляс», «Аль-Фалак», «Ан-Нас») — по 3 раза.\n\n"
         "• <b>Формула начала вечера:</b>\n"
-        "<i>«Амсайна ва амса аль-мульку лилляхи рабби ль-’алямин. Аллахумма инни ас’алюка хайра ма фи хазихи ль-лейляти...»</i>\n\n"
-        "• <b>Сейид аль-истигфар:</b> Молитва о прощении (1 раз).\n\n"
-        "• <b>Короткая формула:</b> Чтение зикров по 100 раз."
+        "<i>«Амсайна ва амса аль-мульку лилляхи рабби ль-’алямин...»</i>\n\n"
+        "• <b>Сейид аль-истигфар:</b> Молитва о прощении (1 раз)."
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Отметить как прочитанные", callback_data="mark_evening_done")],
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="submenu_adhkar")]
+        [InlineKeyboardButton(text="✅ Отметить как выполненные", callback_data="mark_evening_done")],
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back_to_remind_dua")]
     ])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
@@ -383,24 +456,11 @@ async def cb_mark_evening(callback: types.CallbackQuery):
     user = db.get_or_create_user(callback.from_user.id)
     date_str = db.get_user_local_date(user)
     db.update_daily_progress(callback.from_user.id, date_str, {"evening_adhkar_done": True})
-    await callback.answer("Вечерние азкары отмечены выполненными! 🤍", show_alert=True)
-    await cb_adhkar_menu(callback)
+    await callback.answer("Вечерние азкары успешно зафиксированы в сводке дня! 🤍", show_alert=True)
+    await cb_back_to_remind_dua(callback)
 
 
-@dp.callback_query(F.data == "back_to_remind_dua")
-async def cb_back_to_remind_dua(callback: types.CallbackQuery):
-    text = (
-        "📿 <b>Поминания и дуа</b>\n\n"
-        "Выберите нужное направление:"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📿 Зикр и салават (Тасбих)", callback_data="submenu_zikr")],
-        [InlineKeyboardButton(text="📖 Утренние и вечерние азкары", callback_data="submenu_adhkar")]
-    ])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-
-
-# --- ВРЕМЯ НАМАЗОВ (АКТУАЛЬНОЕ ДИНАМИЧЕСКОЕ РАСПИСАНИЕ НА КАЖДЫЙ ДЕНЬ) ---
+# ==================== ВРЕМЯ НАМАЗОВ ====================
 
 @dp.message(F.text == "⏰ Время намазов")
 async def menu_prayer_times(message: types.Message):
@@ -423,17 +483,17 @@ async def menu_prayer_times(message: types.Message):
     await message.answer(text, parse_mode="HTML", reply_markup=get_main_reply_keyboard())
 
 
-# --- РАЗДЕЛ «МОЙ ПУТЬ» ---
+# ==================== РАЗДЕЛ «МОЙ ПУТЬ» (Мудаляма) ====================
 
 @dp.message(F.text == "📊 Мой путь")
 async def menu_my_path(message: types.Message):
     text = (
-        "📊 <b>Мой путь</b>\n\n"
+        "📊 <b>Мой путь (Мудаляма)</b>\n\n"
         "Выберите интересующий вас раздел:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌙 Сводка дня", callback_data="path_daily_summary")],
-        [InlineKeyboardButton(text="📈 Общий прогресс (Стрик)", callback_data="path_general_streak")]
+        [InlineKeyboardButton(text="📈 История поклонения", callback_data="path_history")]
     ])
     await message.answer(text, parse_mode="HTML", reply_markup=kb)
 
@@ -450,12 +510,16 @@ async def cb_path_summary(callback: types.CallbackQuery):
     evening_str = "✅ Прочитаны" if evening_done else "⏳ В процессе"
     
     text = (
-        "🌙 <b>Сводка дня</b>\n\n"
+        "🌙 <b>Сводка дня (Сегодня)</b>:\n\n"
         f"• Дата: {date_str}\n"
         f"• Намазы: {'✅ Выполнены' if prog.get('fajr_done') else '⏳ В процессе'}\n"
-        f"• Азкары утренние: {morning_str}\n"
-        f"• Азкары вечерние: {evening_str}\n"
-        f"• Шаги сегодня: {prog.get('activity_steps', 0)}\n"
+        f"• Тасбих: {prog.get('tasbih_count', 0)} раз\n"
+        f"• Салават: {prog.get('salawat_count', 0)} раз\n"
+        f"• Утренние азкары: {morning_str}\n"
+        f"• Вечерние азкары: {evening_str}\n"
+        f"• Чтение Корана: {prog.get('quran_progress', 'Не записано')}\n"
+        f"• Книги: {prog.get('books_pages', 0)} стр.\n"
+        f"• Шаги: {prog.get('activity_steps', 0)}\n"
         f"• Спорт: {prog.get('sport_minutes', 0)} мин.\n\n"
         "Пусть Аллах примет ваши труды 🤍"
     )
@@ -465,17 +529,12 @@ async def cb_path_summary(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-@dp.callback_query(F.data == "path_general_streak")
-async def cb_path_streak(callback: types.CallbackQuery):
-    user = db.get_or_create_user(callback.from_user.id)
-    streak = user.get("streak_days", 0)
-    level = user.get("current_level", "Аль-Фард")
-    
+@dp.callback_query(F.data == "path_history")
+async def cb_path_history(callback: types.CallbackQuery):
     text = (
-        "📈 <b>Общий прогресс</b>\n\n"
-        f"🔥 Непрерывная серия дней (стрик): <b>{streak} дн.</b>\n"
-        f"✨ Активный режим: <b>{level}</b>\n\n"
-        "Самые любимые дела перед Аллахом — те, которые совершаются регулярно 🤍"
+        "📈 <b>История поклонения</b>\n\n"
+        "Здесь хранится ваш бессрочный архив достижений за недели, месяцы и годы. "
+        "База устроена так, что ни одно усилие, ни один зикр или шаг не стираются со временем 🤍"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⬅️ Назад", callback_data="path_back_main")]
@@ -486,17 +545,175 @@ async def cb_path_streak(callback: types.CallbackQuery):
 @dp.callback_query(F.data == "path_back_main")
 async def cb_path_back(callback: types.CallbackQuery):
     text = (
-        "📊 <b>Мой путь</b>\n\n"
+        "📊 <b>Мой путь (Мудаляма)</b>\n\n"
         "Выберите интересующий вас раздел:"
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌙 Сводка дня", callback_data="path_daily_summary")],
-        [InlineKeyboardButton(text="📈 Общий прогресс (Стрик)", callback_data="path_general_streak")]
+        [InlineKeyboardButton(text="📈 История поклонения", callback_data="path_history")]
     ])
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-# --- АКТУАЛЬНЫЙ РЕЖИМ И ДЕЛИКАТНАЯ ПАУЗА ---
+# ==================== ЗАБОТА О ТЕЛЕ И ДУХЕ (Строгая очередность из 4 направлений) ====================
+
+@dp.message(F.text == "⛳️ Активность")
+async def menu_activity(message: types.Message):
+    text = (
+        "⛳️ <b>Забота о теле и духе</b>\n\n"
+        "«Наше тело — это аманат (доверие) от Всевышнего, а знания и здоровье дают силы для благого».\n\n"
+        "Выберите направление для записи:"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Коран", callback_data="act_quran"),
+         InlineKeyboardButton(text="📚 Книга", callback_data="act_book")],
+        [InlineKeyboardButton(text="🚶‍♂️ Шаги", callback_data="act_walk"),
+         InlineKeyboardButton(text="🏃‍♀️ Спорт / Тренировка", callback_data="act_sport")]
+    ])
+    await message.answer(text, parse_mode="HTML", reply_markup=kb)
+
+
+@dp.callback_query(F.data == "act_quran")
+async def cb_act_quran(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(ActivityStates.waiting_for_quran)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="act_back_main")]
+    ])
+    await callback.message.edit_text(
+        "📖 Укажите прочитанную суру или аяты (например: <i>Сура Аль-Мульк, 1-10 аяты</i>):",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@dp.message(ActivityStates.waiting_for_quran)
+async def process_quran_input(message: types.Message, state: FSMContext):
+    quran_text = message.text.strip()
+    user = db.get_or_create_user(message.from_user.id)
+    date_str = db.get_user_local_date(user)
+    db.update_daily_progress(message.from_user.id, date_str, {"quran_progress": quran_text})
+    await state.clear()
+    await message.answer(
+        f"✅ Машаллаh! Записано чтение Корана: <b>{quran_text}</b> 🤍",
+        parse_mode="HTML",
+        reply_markup=get_main_reply_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "act_book")
+async def cb_act_book(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(ActivityStates.waiting_for_books)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="act_back_main")]
+    ])
+    await callback.message.edit_text(
+        "📚 Введите количество прочитанных страниц за сегодня цифрами (например: <i>15</i>):",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@dp.message(ActivityStates.waiting_for_books)
+async def process_book_input(message: types.Message, state: FSMContext):
+    try:
+        pages = int(message.text.strip())
+    except ValueError:
+        await message.answer("Пожалуйста, введите количество страниц цифрами (например: 15):")
+        return
+
+    user = db.get_or_create_user(message.from_user.id)
+    date_str = db.get_user_local_date(user)
+    db.update_daily_progress(message.from_user.id, date_str, {"books_pages": pages})
+    await state.clear()
+    await message.answer(
+        f"✅ Альхамдулиллах! Записано страниц книги: <b>{pages}</b> 🤍",
+        parse_mode="HTML",
+        reply_markup=get_main_reply_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "act_walk")
+async def cb_act_walk(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(ActivityStates.waiting_for_steps)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="act_back_main")]
+    ])
+    await callback.message.edit_text(
+        "🚶‍♂️ Отправьте в ответ число ваших шагов цифрами (например: <i>5000</i>):",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@dp.message(ActivityStates.waiting_for_steps)
+async def process_steps_input(message: types.Message, state: FSMContext):
+    try:
+        steps = int(message.text.strip())
+    except ValueError:
+        await message.answer("Пожалуйста, введите число шагов цифрами (например: 5000):")
+        return
+
+    user = db.get_or_create_user(message.from_user.id)
+    date_str = db.get_user_local_date(user)
+    db.update_daily_progress(message.from_user.id, date_str, {"activity_steps": steps})
+    await state.clear()
+    await message.answer(
+        f"✅ Машаллаh! Записано шагов: <b>{steps}</b>. Вы отлично потрудились сегодня 🤍",
+        parse_mode="HTML",
+        reply_markup=get_main_reply_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "act_sport")
+async def cb_act_sport(callback: types.CallbackQuery, state: FSMContext):
+    await state.set_state(ActivityStates.waiting_for_sport)
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="act_back_main")]
+    ])
+    await callback.message.edit_text(
+        "🏃‍♀️ Напишите минуты тренировки цифрами (например: <i>30</i>):",
+        parse_mode="HTML",
+        reply_markup=kb
+    )
+
+
+@dp.message(ActivityStates.waiting_for_sport)
+async def process_sport_input(message: types.Message, state: FSMContext):
+    try:
+        minutes = int(message.text.strip())
+    except ValueError:
+        await message.answer("Пожалуйста, введите минуты цифрами (например: 30):")
+        return
+
+    user = db.get_or_create_user(message.from_user.id)
+    date_str = db.get_user_local_date(user)
+    db.update_daily_progress(message.from_user.id, date_str, {"sport_minutes": minutes})
+    await state.clear()
+    await message.answer(
+        f"💪 Альхамдулиллах! Тренировка ({minutes} мин.) успешно сохранена! 🤍",
+        parse_mode="HTML",
+        reply_markup=get_main_reply_keyboard()
+    )
+
+
+@dp.callback_query(F.data == "act_back_main")
+async def cb_act_back(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    text = (
+        "⛳️ <b>Забота о теле и духе</b>\n\n"
+        "«Наше тело — это аманат (доверие) от Всевышнего, а знания и здоровье дают силы для благого».\n\n"
+        "Выберите направление для записи:"
+    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📖 Коран", callback_data="act_quran"),
+         InlineKeyboardButton(text="📚 Книга", callback_data="act_book")],
+        [InlineKeyboardButton(text="🚶‍♂️ Шаги", callback_data="act_walk"),
+         InlineKeyboardButton(text="🏃‍♀️ Спорт / Тренировка", callback_data="act_sport")]
+    ])
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
+
+
+# ==================== АКТУАЛЬНЫЙ РЕЖИМ И ДЕЛИКАТНАЯ ПАУЗА (С ЗАКРЕПЛЕНИЕМ) ====================
 
 @dp.message(F.text == "⚙️ Актуальный режим")
 async def menu_settings(message: types.Message):
@@ -510,8 +727,8 @@ async def menu_settings(message: types.Message):
         if pause_reason == "Особенные дни":
             desc_pause = (
                 f"🌸 <b>Деликатная пауза активна: {pause_reason}</b>\n\n"
-                "Мягкая поддержка духовного состояния: в эти дни вы можете продолжать поминание Всевышнего, чтение Салавата на Пророка ﷺ и прослушивание Корана 🤍\n\n"
-                "Ваш прогресс и серия дней в полной безопасности."
+                "Уведомления временно приостановлены для вашего комфорта. При этом ведение учета (Коран, книги, шаги, спорт, тасбих, салават) полностью доступно 🤍\n\n"
+                "Ваш прогресс и серия дней в абсолютной безопасности."
             )
         elif pause_reason == "Заболел(а)":
             desc_pause = (
@@ -528,8 +745,8 @@ async def menu_settings(message: types.Message):
         elif pause_reason == "Просто отдых":
             desc_pause = (
                 f"🌸 <b>Деликатная пауза активна: {pause_reason}</b>\n\n"
-                "Отдых и забота о внутреннем ресурсе очень важны. Наслаждайтесь моментом спокойствия, а когда появится вдохновение, вы всегда сможете в один клик восстановить свой активный режим 🤍\n\n"
-                "Ваш прогресс и серия дней в абсолютной безопасности."
+                "Иногда душе нужна пауза от мирской суеты, чтобы собраться с силами. Но помните: истинный покой и исцеление сердца обретаются лишь в поминании Всевышнего («Воистину, поминанием Аллаха успокаиваются сердца», сура Ар-Рад, 28).\n\n"
+                "Отдыхайте бережно, но пусть ваше сердце не уходит в беспечность. Ваш прогресс и путь постоянства под надежной защитой 🤍"
             )
         else:
             desc_pause = (
@@ -542,7 +759,13 @@ async def menu_settings(message: types.Message):
             [InlineKeyboardButton(text="✨ Восстановить режим / Завершить паузу", callback_data="pause_restore")],
             [InlineKeyboardButton(text="🌸 Сменить причину паузы", callback_data="settings_pause")]
         ])
-        await message.answer(desc_pause, parse_mode="HTML", reply_markup=kb)
+        sent_msg = await message.answer(desc_pause, parse_mode="HTML", reply_markup=kb)
+        
+        # Автоматическое закрепление сообщения паузы вверху чата
+        try:
+            await message.bot.pin_chat_message(chat_id=message.chat.id, message_id=sent_msg.message_id)
+        except Exception as e:
+            logging.error(f"Не удалось закрепить сообщение: {e}")
         return
 
     text = (
@@ -617,6 +840,10 @@ async def cb_pause_menu(callback: types.CallbackQuery):
 async def cb_pause_set(callback: types.CallbackQuery):
     if callback.data == "pause_restore":
         db.update_user(callback.from_user.id, {"pause_mode": False, "pause_reason": None})
+        try:
+            await callback.bot.unpin_chat_message(chat_id=callback.message.chat.id)
+        except Exception:
+            pass
         await callback.message.edit_text(
             "🤍 С возвращением! Режим паузы завершен, ваш активный путь продолжается с новыми силами.",
             parse_mode="HTML"
@@ -635,7 +862,7 @@ async def cb_pause_set(callback: types.CallbackQuery):
     if callback.data == "pause_special":
         desc = (
             f"🌸 <b>Деликатная пауза: {reason_text}</b>\n\n"
-            "Мягкая поддержка духовного состояния: в эти дни вы можете продолжать поминание Всевышнего, чтение Салавата на Пророка ﷺ и прослушивание Корана 🤍\n\n"
+            "Уведомления временно приостановлены для вашего комфорта. При этом ведение учета (Коран, книги, шаги, спорт, тасбих, салават) полностью доступно 🤍\n\n"
             "Ваш прогресс и серия дней в абсолютной безопасности."
         )
     elif callback.data == "pause_sick":
@@ -653,8 +880,8 @@ async def cb_pause_set(callback: types.CallbackQuery):
     elif callback.data == "pause_rest":
         desc = (
             f"🌸 <b>Деликатная пауза: {reason_text}</b>\n\n"
-            "Отдых и забота о внутреннем ресурсе очень важны. Наслаждайтесь моментом спокойствия, а когда появится вдохновение, вы всегда сможете в один клик восстановить свой активный режим 🤍\n\n"
-            "Ваш прогресс и серия дней в абсолютной безопасности."
+            "Иногда душе нужна пауза от мирской суеты, чтобы собраться с силами. Но помните: истинный покой и исцеление сердца обретаются лишь в поминании Всевышнего («Воистину, поминанием Аллаха успокаиваются сердца», сура Ар-Рад, 28).\n\n"
+            "Отдыхайте бережно, но пусть ваше сердце не уходит в беспечность. Ваш прогресс и путь постоянства под надежной защитой 🤍"
         )
     else:
         desc = (
@@ -667,6 +894,12 @@ async def cb_pause_set(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="🌸 Сменить причину паузы", callback_data="settings_pause")]
     ])
     await callback.message.edit_text(desc, parse_mode="HTML", reply_markup=kb)
+    
+    # Закрепление сообщения паузы вверху чата
+    try:
+        await callback.bot.pin_chat_message(chat_id=callback.message.chat.id, message_id=callback.message.message_id)
+    except Exception as e:
+        logging.error(f"Не удалось закрепить сообщение: {e}")
 
 
 @dp.callback_query(F.data == "settings_back_main")
@@ -689,96 +922,7 @@ async def cb_settings_back(callback: types.CallbackQuery):
     await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
 
 
-# --- ТРЕКЕР АКТИВНОСТИ ---
-
-@dp.message(F.text == "⛳️ Активность")
-async def menu_activity(message: types.Message):
-    text = (
-        "⛳️ <b>Забота о теле</b>\n\n"
-        "«Наше тело — это аманат (доверие) от Всевышнего, а здоровье дает силы для благого». Что добавим в дневник сегодня?"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚶‍♂️ Ходьба (Шаги)", callback_data="act_walk"),
-         InlineKeyboardButton(text="🏃‍♀️ Спорт / Тренировка", callback_data="act_sport")]
-    ])
-    await message.answer(text, parse_mode="HTML", reply_markup=kb)
-
-
-@dp.callback_query(F.data == "act_walk")
-async def cb_act_walk(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(ActivityStates.waiting_for_steps)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="act_back_main")]
-    ])
-    await callback.message.edit_text(
-        "🚶‍♂️ Отправьте в ответ число ваших шагов цифрами (например: <i>5000</i>):",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
-
-@dp.message(ActivityStates.waiting_for_steps)
-async def process_steps_input(message: types.Message, state: FSMContext):
-    try:
-        steps = int(message.text.strip())
-    except ValueError:
-        await message.answer("Пожалуйста, введите число шагов цифрами (например: 5000):")
-        return
-
-    user = db.get_or_create_user(message.from_user.id)
-    date_str = db.get_user_local_date(user)
-    db.update_daily_progress(message.from_user.id, date_str, {"activity_steps": steps})
-    await state.clear()
-
-    await message.answer(
-        f"✅ Машаллаh! Записано шагов: <b>{steps}</b>. Вы отлично потрудились сегодня 🤍",
-        parse_mode="HTML",
-        reply_markup=get_main_reply_keyboard()
-    )
-
-
-@dp.callback_query(F.data == "act_sport")
-async def cb_act_sport(callback: types.CallbackQuery, state: FSMContext):
-    await state.set_state(ActivityStates.waiting_for_sport)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⬅️ Назад", callback_data="act_back_main")]
-    ])
-    await callback.message.edit_text(
-        "🏃‍♀️ Напишите время тренировки (например: <i>15 минут</i> или <i>1 час</i>):",
-        parse_mode="HTML",
-        reply_markup=kb
-    )
-
-
-@dp.message(ActivityStates.waiting_for_sport)
-async def process_sport_input(message: types.Message, state: FSMContext):
-    user = db.get_or_create_user(message.from_user.id)
-    date_str = db.get_user_local_date(user)
-    db.update_daily_progress(message.from_user.id, date_str, {})
-    await state.clear()
-
-    await message.answer(
-        f"💪 Альхамдулиллах! Тренировка успешно сохранена. Пусть Аллах дарует вам крепкое здоровье и силы для благих дел! 🤍",
-        parse_mode="HTML",
-        reply_markup=get_main_reply_keyboard()
-    )
-
-
-@dp.callback_query(F.data == "act_back_main")
-async def cb_act_back(callback: types.CallbackQuery, state: FSMContext):
-    await state.clear()
-    text = (
-        "⛳️ <b>Забота о теле</b>\n\n"
-        "«Наше тело — это аманат (доверие) от Всевышнего, а здоровье дает силы для благого». Что добавим в дневник сегодня?"
-    )
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🚶‍♂️ Ходьба (Шаги)", callback_data="act_walk"),
-         InlineKeyboardButton(text="🏃‍♀️ Спорт / Тренировка", callback_data="act_sport")]
-    ])
-    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=kb)
-
-
-# --- ЗАПУСК ВЕБ-СЕРВЕРА ДЛЯ RENDER ---
+# ==================== ЗАПУСК ВЕБ-СЕРВЕРА ДЛЯ RENDER ====================
 async def on_startup(bot: Bot):
     if not RENDER_EXTERNAL_URL:
         logging.warning("⚠️ RENDER_EXTERNAL_URL не задан!")
