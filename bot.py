@@ -604,12 +604,29 @@ async def end_pause(callback: types.CallbackQuery):
     await callback.answer()
 
 import os
+from aiohttp import web
+
+# Простой веб-сервер для бесплатного тарифа Render (чтобы порт был открыт)
+async def handle_ping(request):
+    return web.Response(text="Amal365 Bot is active and running! 🤍")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    
+    # Render сам передает нужный порт в переменную окружения PORT
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Web server started on port {port}")
 
 async def main():
     init_db()
     logging.basicConfig(level=logging.INFO)
     
-    # Получаем токен из переменной окружения Render
     token = os.getenv("BOT_TOKEN")
     if not token:
         logging.error("Не найден токен бота! Проверьте вкладку Environment на Render.")
@@ -619,6 +636,9 @@ async def main():
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
+    
+    # Запускаем мини-веб-сервер для Render, чтобы Web Service не ругался на порты
+    await start_web_server()
     
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
