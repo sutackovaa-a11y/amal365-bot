@@ -603,10 +603,19 @@ async def end_pause(callback: types.CallbackQuery):
         pass
     await callback.answer()
 
+import os
+
 async def main():
     init_db()
     logging.basicConfig(level=logging.INFO)
-    bot = Bot(token="ТОКЕН_ВАШЕГО_БОТА")
+    
+    # Получаем токен из переменной окружения Render
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        logging.error("Не найден токен бота! Проверьте вкладку Environment на Render.")
+        return
+        
+    bot = Bot(token=token)
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
