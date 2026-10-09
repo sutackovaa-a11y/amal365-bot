@@ -1,6 +1,7 @@
 import os
 import logging
 import sqlite3
+import asyncio 
 from datetime import datetime, timedelta
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types, Router
@@ -9,13 +10,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.exceptions import TelegramBadRequest
-import os
-import logging
-import sqlite3
-import asyncio  # <--- Вот эту строчку нужно добавить в самый верх!
-from datetime import datetime, timedelta
-from aiohttp import web
-from aiogram import Bot, Dispatcher, F, types, Router
 DB_NAME = "amal365.db"
 
 def init_db():
