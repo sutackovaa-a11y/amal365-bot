@@ -1,7 +1,8 @@
-import asyncio
+import os
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
+from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -40,8 +41,12 @@ def init_db():
     conn.commit()
     conn.close()
 
+def get_local_now():
+    # Местное время для Нерюнгри (UTC+9)
+    return datetime.utcnow() + timedelta(hours=9)
+
 def get_today_str():
-    return datetime.now().strftime("%Y-%m-%d")
+    return get_local_now().strftime("%Y-%m-%d")
 
 def ensure_daily_record(user_id):
     conn = sqlite3.connect(DB_NAME)
@@ -61,6 +66,7 @@ class Form(StatesGroup):
     entering_books = State()
     entering_steps = State()
     entering_sport = State()
+    entering_city = State()
 
 router = Router()
 
@@ -68,21 +74,23 @@ def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="⏰ Время намазов"), KeyboardButton(text="📿 Поминания и дуа")],
-            [KeyboardButton(text="📊 Мой путь"), KeyboardButton(text="⛳ Активность")],
-            [KeyboardButton(text="⚙️ Актуальный режим")]
+            [KeyboardButton(text="📊 Мой путь"), KeyboardButton(text="⚙️ Актуальный режим")]
         ],
         resize_keyboard=True
     )
 
 def get_next_prayer():
-    current_time_str = datetime.now().strftime("%H:%M")
+    local_now = get_local_now()
+    current_time_str = local_now.strftime("%H:%M")
+    
+    # Актуальное расписание для Нерюнгри
     prayers = [
-        ("Фаджр", "04:40"),
-        ("Восход солнца", "06:19"),
-        ("Зухр", "12:35"),
-        ("Аср", "15:52"),
-        ("Магриб", "18:50"),
-        ("Иша", "20:31")
+        ("Фаджр", "05:03"),
+        ("Восход солнца", "06:54"),
+        ("Зухр", "12:30"),
+        ("Аср", "15:19"),
+        ("Магриб", "18:04"),
+        ("Иша", "19:48")
     ]
     next_prayer = prayers[0][0]
     for name, p_time in prayers:
@@ -124,12 +132,12 @@ async def cmd_prayer_times(message: types.Message):
     text = (
         f"🕌 **Время намазов для г. {city}**\n\n"
         f"⏳ Ближайший намаз: **{next_p}**\n\n"
-        f"• Фаджр: 04:40\n"
-        f"• Восход солнца: 06:19\n"
-        f"• Зухр: 12:35\n"
-        f"• Аср: 15:52\n"
-        f"• Магриб: 18:50\n"
-        f"• Иша: 20:31\n\n"
+        f"• Фаджр: 05:03\n"
+        f"• Восход солнца: 06:54\n"
+        f"• Зухр: 12:30\n"
+        f"• Аср: 15:19\n"
+        f"• Магриб: 18:04\n"
+        f"• Иша: 19:48\n\n"
         f"«Воистину, намаз предписан верующим в определенное время»."
     )
     await message.answer(text, parse_mode="Markdown")
@@ -137,7 +145,7 @@ async def cmd_prayer_times(message: types.Message):
 @router.message(F.text == "📿 Поминания и дуа")
 async def cmd_duas(message: types.Message):
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📿 Тасбих (Счетчик)", callback_data="tasbih_inc")],
+        [InlineKeyboardButton(text="📿 Тасбих", callback_data="tasbih_inc")],
         [InlineKeyboardButton(text="🌹 Салават", callback_data="salawat_inc")],
         [InlineKeyboardButton(text="☀️ Утренние азкары", callback_data="morning_adhkar_full")],
         [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="evening_adhkar_full")]
@@ -147,7 +155,7 @@ async def cmd_duas(message: types.Message):
 @router.callback_query(F.data == "back_to_duas")
 async def back_to_duas(callback: types.CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📿 Тасбих (Счетчик)", callback_data="tasbih_inc")],
+        [InlineKeyboardButton(text="📿 Тасбих", callback_data="tasbih_inc")],
         [InlineKeyboardButton(text="🌹 Салават", callback_data="salawat_inc")],
         [InlineKeyboardButton(text="☀️ Утренние азкары", callback_data="morning_adhkar_full")],
         [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="evening_adhkar_full")]
@@ -180,7 +188,7 @@ async def process_tasbih(callback: types.CallbackQuery):
     conn.commit()
     conn.close()
     
-    text = f"📿 **Счетчик Тасбиха**\n\nПовторяйте зикр с искренностью в сердце.\n\nТекущий счет: **{count}**"
+    text = f"📿 **Тасбих**\n\nПовторяйте зикр с искренностью в сердце.\n\nТекущий счет: **{count}**"
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Нажать (+1)", callback_data="tasbih_inc")],
         [InlineKeyboardButton(text="🔄 Сбросить", callback_data="tasbih_reset")],
@@ -233,13 +241,13 @@ async def morning_adhkar_full(callback: types.CallbackQuery):
     text = (
         "☀️ **Утренние азкары (Полный текст)**\n\n"
         "1. **Аят аль-Курси (1 раз):**\n"
-        "«Аллаху ля иляха илля хуваль хайюль кайюм, не берет Его ни дремота, ни сон...»\n\n"
+        "«Аллаху ля иляха илля хуваль хайюль кайюм, не берет Его ни дремота, ни сон. Ему принадлежит то, что на небесах, и то, что на земле. Кто станет заступником пред Ним без Его дозволения? Он знает то, что было до них, и то, что будет после них...»\n\n"
         "2. **Три последние суры (по 3 раза):**\n"
-        "Сура «Аль-Ихляс», «Аль-Фаляк», «Ан-Нас».\n\n"
+        "Сура «Аль-Ихляс», сура «Аль-Фаляк», сура «Ан-Нас».\n\n"
         "3. **Формула начала утра:**\n"
-        "«Асбахна ва асбах аль-мульку ли-Ллях, ва-ль-хамду ли-Ллях...»\n\n"
+        "«Асбахна ва асбах аль-мульку ли-Ллях, ва-ль-хамду ли-Ллях, ля иляха илля-ллаху вахдаху ля шарика ляh, ляhу-ль-мульку ва ляhу-ль-хамду ва хува ‘аля кулли шай-ин кадир...»\n\n"
         "4. **Сайид аль-истигфар:**\n"
-        "«Аллахумма Анта Рабби, ля иляха илля Анта, сотворил меня, и я Твой раб...»"
+        "«Аллахумма Анта Рабби, ля иляха илля Анта, сотворил меня, и я Твой раб, и я верен своему завету с Тобой...»"
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Отметить как прочитанные", callback_data="mark_morning_done")],
@@ -270,9 +278,9 @@ async def evening_adhkar_full(callback: types.CallbackQuery):
         "1. **Аят аль-Курси (1 раз):**\n"
         "«Аллаху ля иляха илля хуваль хайюль кайюм...»\n\n"
         "2. **Три последние суры (по 3 раза):**\n"
-        "Сура «Аль-Ихляс», «Аль-Фаляк», «Ан-Нас».\n\n"
+        "Сура «Аль-Ихляс», сура «Аль-Фаляк», сура «Ан-Нас».\n\n"
         "3. **Формула начала вечера:**\n"
-        "«Амсайна ва амса аль-мульку ли-Ллях, ва-ль-хамду ли-Ллях...»"
+        "«Амсайна ва амса аль-мульку ли-Ллях, ва-ль-хамду ли-Ллях, ля иляха илля-ллаху вахдаху ля шарика ляh...»"
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Отметить как прочитанные", callback_data="mark_evening_done")],
@@ -387,28 +395,15 @@ async def back_to_summary(callback: types.CallbackQuery):
         pass
     await callback.answer()
 
-@router.message(F.text == "⛳ Активность")
 @router.callback_query(F.data == "add_activity_menu")
-async def add_activity_menu(event: types.Message | types.CallbackQuery):
+async def add_activity_menu(callback: types.CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📖 Коран", callback_data="act_quran"), InlineKeyboardButton(text="📚 Книги", callback_data="act_books")],
         [InlineKeyboardButton(text="👣 Шаги", callback_data="act_steps"), InlineKeyboardButton(text="⚽ Спорт", callback_data="act_sport")],
-        [InlineKeyboardButton(text="⬅️ Назад в меню", callback_data="back_to_main")]
+        [InlineKeyboardButton(text="⬅️ К сводке", callback_data="back_to_summary")]
     ])
-    if isinstance(event, types.CallbackQuery):
-        try:
-            await event.message.edit_text("⛳ **Выберите категорию для записи активности:**", reply_markup=markup, parse_mode="Markdown")
-        except TelegramBadRequest:
-            pass
-        await event.answer()
-    else:
-        await event.answer("⛳ **Выберите категорию для записи активности:**", reply_markup=markup, parse_mode="Markdown")
-
-@router.callback_query(F.data == "back_to_main")
-async def back_to_main(callback: types.CallbackQuery):
-    await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard())
     try:
-        await callback.message.delete()
+        await callback.message.edit_text("⛳ **Выберите категорию для записи активности:**", reply_markup=markup, parse_mode="Markdown")
     except TelegramBadRequest:
         pass
     await callback.answer()
@@ -518,33 +513,80 @@ async def cmd_current_mode(message: types.Message):
     user_id = message.from_user.id
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("SELECT mode, pause_reason FROM users WHERE user_id = ?", (user_id,))
+    cursor.execute("SELECT city, mode, pause_reason FROM users WHERE user_id = ?", (user_id,))
     row = cursor.fetchone()
     conn.close()
     
-    mode = row[0] if row else "active"
-    reason = row[1] if row and len(row) > 1 else ""
+    city = row[0] if row else "Нерюнгри"
+    mode = row[1] if row else "active"
+    reason = row[2] if row and len(row) > 2 else ""
     
     if mode == "pause":
-        text = (
-            f"⏸ **Деликатная пауза активна ({reason})**\n\n"
-            "Уведомления временно приостановлены для вашего комфорта. При этом ведение учета (Коран, книги, шаги, спорт, тасбих, салават) полностью доступно. Ваш прогресс и серия дней в абсолютной безопасности 🤍."
-        )
+        text = f"⏸ **Деликатная пауза активна ({reason})**\n\n"
+        if reason == "Особенные дни":
+            text += (
+                "Дорогая сестра! В эти дни Всевышний сам освободил тебя от ряда обязанностей по Мудрости Своей, проявив к тебе особую милость и заботу. Это время не упущения, а особого состояния созерцания, душевного тепла и отдыха.\n\n"
+                "💡 **Что можно делать:**\n"
+                "• Искренние дуа и мольбы к Аллаху.\n"
+                "• Обильное поминание (зикр), тасбих и салават Пророку ﷺ.\n"
+                "• Слушание благородного Корана с трепетом в сердце.\n"
+                "• Чтение полезных исламских книг и приобретение знаний.\n\n"
+            )
+        elif reason == "Заболела":
+            text += (
+                "Здоровье — это великий аманат от Аллаха. Когда тело просит отдыха и исцеления, забота о нем становится частью поклонения. Болезнь смывает тревоги и очищает душу.\n\n"
+                "💡 **Поддержка:** Сосредоточьтесь на восстановлении сил. Не корите себя за паузу — ваше сердце помнит о Творце, а малейшее терпение возвышает вас пред Ним 🤍.\n\n"
+            )
+        elif reason == "Времени нет":
+            text += (
+                "Жизнь бывает насыщена заботами и делами. В периоды высокой занятости важно не выгорать, а сохранять внутренний баланс.\n\n"
+                "💡 **Поддержка:** Даже в самый плотный день можно сохранить связь со Всевышним через короткий зикр в сердце и мысленную благодарность 🤍.\n\n"
+            )
+        else:
+            text += (
+                "Душе и разуму порой необходима тишина и пауза от ежедневной суеты, чтобы обрести свежие силы и вдохновение.\n\n"
+                "💡 **Поддержка:** Позвольте себе этот короткий перерыв без чувства вины. Настоящее постоянство заключается в умении вовремя перевести дух 🤍.\n\n"
+            )
+        text += "Ваш прогресс и серия дней в абсолютной безопасности."
+        
         markup = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔄 Сменить причину", callback_data="pause_reasons")],
-            [InlineKeyboardButton(text="▶️ Восстановить режим и завершить паузу", callback_data="end_pause")]
+            [InlineKeyboardButton(text="🏙 Изменить город", callback_data="change_city")],
+            [InlineKeyboardButton(text="🔄 Сменить причину паузы", callback_data="pause_reasons")],
+            [InlineKeyboardButton(text="▶️ Завершить паузу и вернуться в ритм", callback_data="end_pause")]
         ])
     else:
         text = (
-            "🤍 **Альхамдулиллах, намерение оформлено. Ритм «Аль-Фард» бережно настроен.**\n\n"
-            "Пусть этот путь принесет в ваше сердце свет, баракат и глубокую сакину.\n\n"
-            "Панель внизу всегда рядом, чтобы тихо и деликатно сопровождать вас изо дня в день."
+            f"⚙️ **Актуальный режим**\n\n"
+            f"🏙 Текущий город: **{city}**\n"
+            f"✨ Статус: **Активный ритм**\n\n"
+            "Вы находитесь в гармоничном потоке ежедневного поклонения и заботы о себе. Пусть каждый шаг на этом пути приносит свет вашему сердцу 🤍."
         )
         markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏙 Изменить город", callback_data="change_city")],
             [InlineKeyboardButton(text="⏸ Включить деликатную паузу", callback_data="pause_reasons")]
         ])
         
     await message.answer(text, reply_markup=markup, parse_mode="Markdown")
+
+@router.callback_query(F.data == "change_city")
+async def change_city_start(callback: types.CallbackQuery, state: FSMContext):
+    await callback.message.answer("Введите название вашего города (например, Нерюнгри, Москва, Казань):")
+    await state.set_state(Form.entering_city)
+    await callback.answer()
+
+@router.message(Form.entering_city)
+async def save_city(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+    city_name = message.text.strip()
+    
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET city = ? WHERE user_id = ?", (city_name, user_id))
+    conn.commit()
+    conn.close()
+    
+    await state.clear()
+    await message.answer(f"Город успешно изменен на: **{city_name}** 🤍", parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 @router.callback_query(F.data == "pause_reasons")
 async def pause_reasons(callback: types.CallbackQuery):
@@ -568,15 +610,30 @@ async def set_pause(callback: types.CallbackQuery):
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO users (user_id, mode, pause_reason) VALUES (?, 'pause', ?)", (user_id, reason))
+    cursor.execute("UPDATE users SET mode = 'pause', pause_reason = ? WHERE user_id = ?", (reason, user_id))
     conn.commit()
     conn.close()
     
-    text = (
-        f"⏸ **Деликатная пауза: {reason}**\n\n"
-        "Иногда душа нуждается в паузе от мирской суеты, чтобы собраться с силами. Но помните: истинный покой и исцеление сердца обретаются лишь в поминании Всевышнего («Воистину, поминанием Аллаха успокаиваются сердца», сура Ар-Рад, 28).\n\n"
-        "Ваш прогресс и путь постоянства под надежной защитой 🤍."
-    )
+    text = f"⏸ **Деликатная пауза: {reason}**\n\n"
+    if reason == "Особенные дни":
+        text += (
+            "Дорогая сестра! В эти дни Всевышний проявил к тебе особую заботу. Это время созерцания, душевного тепла и отдыха.\n\n"
+            "💡 **Что поддержит вас:** дуа, зикр, тасбих, салават, слушание Корана и чтение книг.\n\n"
+        )
+    elif reason == "Заболела":
+        text += (
+            "Забота о здоровье — часть поклонения. Сосредоточьтесь на восстановлении сил, ваше сердце помнит о Творце 🤍.\n\n"
+        )
+    elif reason == "Времени нет":
+        text += (
+            "В периоды высокой занятости сохраняйте связь со Всевышним через короткий зикр в сердце и искреннее намерение 🤍.\n\n"
+        )
+    else:
+        text += (
+            "Позвольте себе этот короткий перерыв без чувства вины, чтобы продолжить путь с новыми силами 🤍.\n\n"
+        )
+    text += "Ваш прогресс надежно защищен."
+
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Сменить причину", callback_data="pause_reasons")],
         [InlineKeyboardButton(text="▶️ Завершить паузу", callback_data="end_pause")]
@@ -593,7 +650,7 @@ async def end_pause(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("INSERT OR REPLACE INTO users (user_id, mode, pause_reason) VALUES (?, 'active', NULL)", (user_id,))
+    cursor.execute("UPDATE users SET mode = 'active', pause_reason = NULL WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
     
@@ -603,10 +660,15 @@ async def end_pause(callback: types.CallbackQuery):
         pass
     await callback.answer()
 
-import os
-from aiohttp import web
+@router.callback_query(F.data == "back_to_main")
+async def back_to_main(callback: types.CallbackQuery):
+    await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard())
+    try:
+        await callback.message.delete()
+    except TelegramBadRequest:
+        pass
+    await callback.answer()
 
-# Простой веб-сервер для бесплатного тарифа Render (чтобы порт был открыт)
 async def handle_ping(request):
     return web.Response(text="Amal365 Bot is active and running! 🤍")
 
@@ -617,7 +679,6 @@ async def start_web_server():
     runner = web.AppRunner(app)
     await runner.setup()
     
-    # Render сам передает нужный порт в переменную окружения PORT
     port = int(os.getenv("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
@@ -637,7 +698,6 @@ async def main():
     dp = Dispatcher(storage=storage)
     dp.include_router(router)
     
-    # Запускаем мини-веб-сервер для Render, чтобы Web Service не ругался на порты
     await start_web_server()
     
     await bot.delete_webhook(drop_pending_updates=True)
