@@ -130,7 +130,7 @@ class ActivityForm(StatesGroup):
 
 router = Router()
 
-# Главное меню строго с 4 кнопками
+# Главное меню ровно из 4 кнопок
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
@@ -259,7 +259,7 @@ async def select_rhythm(callback: types.CallbackQuery):
     await callback.message.answer("Главное меню активировано:", reply_markup=get_main_keyboard())
     await callback.answer()
 
-# === КНОПКА «ВРЕМЯ НАМАЗОВ» ===
+# === КНОПКА «ВРЕМЯ НАМАЗОВ» В МЕНЮ ===
 @router.message(F.text == "⏰ Время намазов")
 async def cmd_prayer_times(message: types.Message):
     user_id = message.from_user.id
@@ -706,7 +706,7 @@ async def change_rhythm_start(callback: types.CallbackQuery):
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🌱 Аль-Фард", callback_data="rhythm_Аль-Фард")],
         [InlineKeyboardButton(text="🌿 Аль-Истикама", callback_data="rhythm_Аль-Истикама")],
-        [InlineKeyboardButton(text="📖 Ат-Тазкия", callback_data="rhythm_Ат-Тазкия")],
+        [InlineKeyboardButton(text="📖 Ат-Тазкия", callback_data="rhythm_Аль-Тазкия")],
         [InlineKeyboardButton(text="⭐ Аль-Ихсан", callback_data="rhythm_Аль-Ихсан")]
     ])
     try: await callback.message.edit_text("✨ **Выберите новый духовный ритм:**", reply_markup=markup, parse_mode="Markdown")
