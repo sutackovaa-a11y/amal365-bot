@@ -62,7 +62,7 @@ def init_db():
     conn.close()
 
 def get_local_now():
-    return datetime.utcnow() + timedelta(hours=9) # Можно настроить под часовой пояс или брать локальное время
+    return datetime.utcnow() + timedelta(hours=9)
 
 def get_today_str():
     return get_local_now().strftime("%Y-%m-%d")
@@ -96,17 +96,15 @@ async def fetch_prayer_times(lat, lon, date_str):
                         "Аср": timings.get("Asr", "15:30")[:5],
                         "Магриб": timings.get("Maghrib", "18:00")[:5],
                         "Иша": timings.get("Isha", "19:30")[:5],
-                        "Тахаджуд": "03:30" # Расчетный ночной рубеж
+                        "Тахаджуд": "03:30"
                     }
         except Exception as e:
             logging.error(f"Error fetching prayer times: {e}")
-    # Резервные значения, если сеть недоступна
     return {
         "Фаджр": "05:03", "Восход солнца": "06:54", "Зухр": "12:30",
         "Аср": "15:19", "Магриб": "18:04", "Иша": "19:48", "Тахаджуд": "03:30"
     }
 
-# Геокодинг города через Nominatim API (определяет координаты для любого города мира)
 async def get_coordinates_by_city(city_name):
     url = f"https://nominatim.openstreetmap.org/search?q={city_name}&format=json&limit=1"
     headers = {'User-Agent': 'Amal365Bot/1.0'}
@@ -119,7 +117,7 @@ async def get_coordinates_by_city(city_name):
                         return float(data[0]['lat']), float(data[0]['lon'])
         except Exception as e:
             logging.error(f"Geocoding error: {e}")
-    return 42.8746, 74.5698 # По умолчанию Бишкек, если город не найден
+    return 42.8746, 74.5698
 
 class OnboardForm(StatesGroup):
     entering_city = State()
@@ -288,7 +286,7 @@ async def toggle_prayer(callback: types.CallbackQuery):
     else:
         await callback.answer("Статус намаза обновлен! 🤍")
 
-# === ПОМИНАНИЯ И ДУА (С ПОЛНЫМИ ТЕКСТАМИ) ===
+# === ПОМИНАНИЯ И ДУА ===
 @router.message(F.text == "📿 Поминания и дуа")
 async def cmd_duas(message: types.Message):
     markup = InlineKeyboardMarkup(inline_keyboard=[
@@ -672,4 +670,225 @@ async def change_city_start(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(ActivityForm.updating_city)
 async def save_city_update(message: types.Message, state: FSMContext):
-    user_id = message
+    user_id = message.from_user.id
+    city_name = message.text.strip()
+    lat, lon = await get_coordinates_by_city(city_name)
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET city = ?, latitude = ?, longitude = ? WHERE user_id = ?", (city_name, lat, lon, user_id))
+    conn.commit()
+    conn.close()
+    await state.clear()
+    await message.answer(f"Город успешно изменен на: **{city_name}** 🤍", parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+@router.callback_query(F.data == "change_rhythm_start")
+async def change_rhythm_start(callback: types.CallbackQuery):
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🌱 Аль-Фард", callback_data="rhythm_Аль-Фард")],
+        [InlineKeyboardButton(text="🌿 Аль-Истикама", callback_data="rhythm_Аль-Истикама")],
+        [InlineKeyboardButton(text="📖 Ат-Тазкия", callback_data="rhythm_Ат-Тазкия")],
+        [InlineKeyboardButton(text="⭐ Аль-Ихсан", callback_data="rhythm_Аль-Ихсан")]
+    ])
+    try: await callback.message.edit_text("✨ **Выберите новый духовный ритм:**", reply_markup=markup, parse_mode="Markdown")
+    except TelegramBadRequest: pass
+    await callback.answer()
+
+@router.callback_query(F.data == "set_pause_special")
+async def set_pause_special(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET mode = 'pause' WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    text = "🌸 **СТАТУС НАВЕРХУ: ДЕЛИКАТНАЯ ПАУЗА АКТИВНА** 🌸\n\nВаш прогресс надежно защищен."
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏙 Сменить город", callback_data="change_city")],
+        [InlineKeyboardButton(text="🌱 Сменить режим", callback_data="change_rhythm_start")],
+        [InlineKeyboardButton(text="▶️ Завершить паузу", callback_data="end_pause")]
+    ])
+    try: await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+    except TelegramBadRequest: pass
+    await callback.answer()
+
+@router.callback_query(F.data == "end_pause")
+async def end_pause(callback: types.CallbackQuery):
+    user_id = callback.from_user.id
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET mode = 'active' WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    text = "⚙️ **Актуальный режим**\n\n✨ Режим паузы завершен 🤍."
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🏙 Сменить город", callback_data="change_city")],
+        [InlineKeyboardButton(text="🌱 Сменить режим", callback_data="change_rhythm_start")],
+        [InlineKeyboardButton(text="🌸 Включить деликатную паузу", callback_data="set_pause_special")]
+    ])
+    try: await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+    except TelegramBadRequest: pass
+    await callback.answer()
+
+# === ФОНОВЫЙ ПУЛЬС С ДИНАМИЧЕСКИМ РАСЧЕТОМ ===
+async def background_scheduler(bot: Bot):
+    while True:
+        try:
+            now = get_local_now()
+            current_time_str = now.strftime("%H:%M")
+            today = now.strftime("%Y-%m-%d")
+            weekday = now.weekday()
+            
+            conn = sqlite3.connect(DB_NAME)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_id, mode, latitude, longitude FROM users WHERE onboarding_completed = 1")
+            users = cursor.fetchall()
+            
+            for user_id, mode, lat, lon in users:
+                if mode == "pause":
+                    continue
+                
+                ensure_daily_record(user_id)
+                prayer_times = await fetch_prayer_times(lat, lon, today)
+                
+                prayer_keys = [
+                    ("Фаджр", "fajr", "fajr_done"),
+                    ("Зухр", "dhuhr", "dhuhr_done"),
+                    ("Аср", "asr", "asr_done"),
+                    ("Магриб", "maghrib", "maghrib_done"),
+                    ("Иша", "isha", "isha_done")
+                ]
+                
+                for p_name, p_key, p_done_col in prayer_keys:
+                    p_time_str = prayer_times.get(p_name, "12:00")
+                    try:
+                        p_dt = datetime.strptime(p_time_str, "%H:%M")
+                    except ValueError:
+                        continue
+                    
+                    minus_5 = (p_dt - timedelta(minutes=5)).strftime("%H:%M")
+                    plus_20 = (p_dt + timedelta(minutes=20)).strftime("%H:%M")
+                    
+                    if current_time_str == minus_5:
+                        cursor.execute("""
+                            SELECT 1 FROM notification_log 
+                            WHERE user_id = ? AND date = ? AND prayer_key = ? AND notification_type = '5min'
+                        """, (user_id, today, p_key))
+                        if not cursor.fetchone():
+                            if weekday == 4:
+                                sense_text = (
+                                    f"🕌 **Приближается благословенный намаз: {p_name}** ({p_time_str}, через 5 минут).\n\n"
+                                    "✨ *Пятница (Джума):* Пророк ﷺ сказал: «Поистине, лучший из ваших дней — это пятница... Чаще призывайте на меня благословения» (Абу Дауд). Не забудьте про суру «Аль-Кяхф» 🤍."
+                                )
+                            elif p_name == "Фаджр":
+                                sense_text = (
+                                    "🕌 **Приближается Фаджр** (через 5 минут).\n\n"
+                                    "🌅 Пророк ﷺ сказал: «Два ракката сунны утреннего намаза лучше этого мира и всего, что в нем» (Муслим) 🤍."
+                                )
+                            else:
+                                sense_text = (
+                                    f"🕌 **Приближается время намаза: {p_name}** ({p_time_str}, через 5 минут).\n\n"
+                                    "📖 «Воистину, намаз предписан верующим в определенное время» (сура Ан-Ниса, 103) 🤍."
+                                )
+                            
+                            markup = InlineKeyboardMarkup(inline_keyboard=[
+                                [InlineKeyboardButton(text=f"✅ Отметить выполненным ({p_name})", callback_data=f"toggle_p_{p_key}")]
+                            ])
+                            try:
+                                await bot.send_message(user_id, sense_text, reply_markup=markup, parse_mode="Markdown")
+                                cursor.execute("INSERT OR IGNORE INTO notification_log (user_id, date, prayer_key, notification_type) VALUES (?, ?, ?, '5min')", (user_id, today, p_key))
+                                conn.commit()
+                            except Exception as e:
+                                logging.error(f"Failed to send 5min reminder: {e}")
+                    
+                    if current_time_str == plus_20:
+                        cursor.execute(f"SELECT {p_done_col} FROM daily_progress WHERE user_id = ? AND date = ?", (user_id, today))
+                        row = cursor.fetchone()
+                        is_done = row[0] if row else 0
+                        
+                        if not is_done:
+                            cursor.execute("""
+                                SELECT 1 FROM notification_log 
+                                WHERE user_id = ? AND date = ? AND prayer_key = ? AND notification_type = '20min'
+                            """, (user_id, today, p_key))
+                            if not cursor.fetchone():
+                                soft_text = f"🌿 **Бережное напоминание о намазе ({p_name})**\n\nВремя намаза наступило. Уделите несколько минут Творцу, когда появится возможность 🤍."
+                                markup = InlineKeyboardMarkup(inline_keyboard=[
+                                    [InlineKeyboardButton(text=f"✅ Отметить выполненным ({p_name})", callback_data=f"toggle_p_{p_key}")]
+                                ])
+                                try:
+                                    await bot.send_message(user_id, soft_text, reply_markup=markup, parse_mode="Markdown")
+                                    cursor.execute("INSERT OR IGNORE INTO notification_log (user_id, date, prayer_key, notification_type) VALUES (?, ?, ?, '20min')", (user_id, today, p_key))
+                                    conn.commit()
+                                except Exception as e:
+                                    logging.error(f"Failed to send 20min reminder: {e}")
+                
+                if current_time_str == "21:30":
+                    cursor.execute("SELECT 1 FROM notification_log WHERE user_id = ? AND date = ? AND prayer_key = 'evening_mood' AND notification_type = 'prompt'", (user_id, today))
+                    if not cursor.fetchone():
+                        mood_text = "🌙 **Вечерний вдох**\n\nКак чувствует себя ваше сердце сегодня?"
+                        markup = InlineKeyboardMarkup(inline_keyboard=[
+                            [
+                                InlineKeyboardButton(text="😇 Светло и радостно", callback_data="evening_mood_good"),
+                                InlineKeyboardButton(text="🙂 Спокойно", callback_data="evening_mood_neutral"),
+                                InlineKeyboardButton(text="🥺 Устала / тяжело", callback_data="evening_mood_hard")
+                            ]
+                        ])
+                        try:
+                            await bot.send_message(user_id, mood_text, reply_markup=markup, parse_mode="Markdown")
+                            cursor.execute("INSERT OR IGNORE INTO notification_log (user_id, date, prayer_key, notification_type) VALUES (?, ?, 'evening_mood', 'prompt')", (user_id, today))
+                            conn.commit()
+                        except Exception as e:
+                            logging.error(f"Failed to send evening mood prompt: {e}")
+            
+            conn.close()
+        except Exception as ex:
+            logging.error(f"Scheduler error: {ex}")
+        
+        await asyncio.sleep(60)
+
+async def handle_ping(request):
+    return web.Response(text="Amal365 Bot is active and running! 🤍")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    app.router.add_get("/health", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    logging.info(f"Web server started on port {port}")
+
+async def main():
+    init_db()
+    logging.basicConfig(level=logging.INFO)
+    
+    token = os.getenv("BOT_TOKEN")
+    if not token:
+        logging.error("Не найден токен бота! Проверьте вкладку Environment на Render.")
+        return
+        
+    bot = Bot(token=token)
+    storage = MemoryStorage()
+    dp = Dispatcher(storage=storage)
+    dp.include_router(router)
+    
+    # Сначала веб-сервер для прохождения health check на Render
+    await start_web_server()
+    
+    # Затем фоновый планировщик уведомлений
+    asyncio.create_task(background_scheduler(bot))
+    
+    # Запуск бота
+    await bot.delete_webhook(drop_pending_updates=True)
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logging.info("Bot stopped!")
