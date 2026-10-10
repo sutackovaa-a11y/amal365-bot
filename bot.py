@@ -180,6 +180,10 @@ class OnboardForm(StatesGroup):
     entering_city = State()
 
 class ActivityForm(StatesGroup):
+    entering_quran = State()
+    entering_books = State()
+    entering_steps = State()
+    entering_sport = State()
     updating_city = State()
 
 router = Router()
@@ -458,7 +462,8 @@ async def cmd_duas(message: types.Message):
         [InlineKeyboardButton(text="📿 Тасбих", callback_data="tasbih_open")],
         [InlineKeyboardButton(text="🌹 Салават", callback_data="salawat_open")],
         [InlineKeyboardButton(text="☀️ Утренние азкары", callback_data="morning_adhkar_full")],
-        [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="evening_adhkar_full")]
+        [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="evening_adhkar_full")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_summary")]
     ])
     await message.answer(text, reply_markup=markup, parse_mode="Markdown")
 
@@ -473,7 +478,8 @@ async def back_to_duas(callback: types.CallbackQuery):
         [InlineKeyboardButton(text="📿 Тасбих", callback_data="tasbih_open")],
         [InlineKeyboardButton(text="🌹 Салават", callback_data="salawat_open")],
         [InlineKeyboardButton(text="☀️ Утренние азкары", callback_data="morning_adhkar_full")],
-        [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="evening_adhkar_full")]
+        [InlineKeyboardButton(text="🌙 Вечерние азкары", callback_data="evening_adhkar_full")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_summary")]
     ])
     try:
         await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
@@ -708,14 +714,17 @@ async def cmd_my_path(message: types.Message):
     
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 История поклонения", callback_data="history_archive")],
-        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")]
+        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_summary")]
     ])
     await message.answer(summary_text, reply_markup=markup, parse_mode="Markdown")
 
 @router.callback_query(F.data == "history_archive")
 async def history_archive(callback: types.CallbackQuery):
     text = "📜 **История поклонения**\n\nЗдесь бережно хранится Ваш архив достижений и благородных стремлений 🤍."
-    markup = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад к сводке", callback_data="back_to_summary")]])
+    markup = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад к сводке", callback_data="back_to_summary")]
+    ])
     try: await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
     except TelegramBadRequest: pass
     await callback.answer()
@@ -745,7 +754,8 @@ async def back_to_summary(callback: types.CallbackQuery):
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 История поклонения", callback_data="history_archive")],
-        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")]
+        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_summary")]
     ])
     try: await callback.message.edit_text(summary_text, reply_markup=markup, parse_mode="Markdown")
     except TelegramBadRequest: pass
@@ -759,64 +769,64 @@ async def add_activity_menu(callback: types.CallbackQuery):
         "Выберите категорию для записи:"
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📖 Коран (+1 аят)", callback_data="act_quran_plus")],
-        [InlineKeyboardButton(text="📚 Книги (+5 стр)", callback_data="act_books_plus"), InlineKeyboardButton(text="📚 Книги (+10 стр)", callback_data="act_books_plus10")],
-        [InlineKeyboardButton(text="👣 Шаги (+1000)", callback_data="act_steps_plus"), InlineKeyboardButton(text="👣 Шаги (+5000)", callback_data="act_steps_plus5000")],
-        [InlineKeyboardButton(text="⚽ Спорт (+15 мин)", callback_data="act_sport_plus"), InlineKeyboardButton(text="⚽ Спорт (+30 мин)", callback_data="act_sport_plus30")],
+        [InlineKeyboardButton(text="📖 Коран / 📚 Книги", callback_data="act_quran"), InlineKeyboardButton(text="👣 Шаги / ⚽ Спорт", callback_data="act_steps")],
         [InlineKeyboardButton(text="⬅️ К сводке", callback_data="back_to_summary")]
     ])
     try: await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
     except TelegramBadRequest: pass
     await callback.answer()
 
-# === ИНТЕРАКТИВНОЕ ВНЕСЕНИЕ АКТИВНОСТИ ЧЕРЕЗ КНОПКИ (БЕЗ ЗАСОРА ЧАТА) ===
-@router.callback_query(F.data.startswith("act_"))
-async def process_activity_buttons(callback: types.CallbackQuery):
+@router.callback_query(F.data.in_(["act_quran", "act_books", "act_steps", "act_sport"]))
+async def act_category_select(callback: types.CallbackQuery, state: FSMContext):
     action = callback.data
-    user_id = callback.from_user.id
+    titles = {
+        "act_quran": ("🌿 Чтение Корана", "Введите название суры или количество аятов (например: 10):", ActivityForm.entering_quran),
+        "act_books": ("📚 Полезное чтение", "Введите количество прочитанных страниц (число):", ActivityForm.entering_books),
+        "act_steps": ("👣 Шаги и движение", "Введите количество шагов (число):", ActivityForm.entering_steps),
+        "act_sport": ("⚽ Спорт и активность", "Введите количество минут спорта (число):", ActivityForm.entering_sport)
+    }
+    title, prompt, target_state = titles[action]
+    
+    msg = await callback.message.edit_text(
+        f"{title}\n\n{prompt}\n\n*(Сообщение с подсказкой и ваш ответ автоматически удалятся, а сводка обновится)*",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад к выбору", callback_data="add_activity_menu")]]),
+        parse_mode="Markdown"
+    )
+    await state.update_data(prompt_msg_id=msg.message_id)
+    await state.set_state(target_state)
+    await callback.answer()
+
+async def save_activity_and_cleanup(message: types.Message, state: FSMContext, act_type: str):
+    user_id = message.from_user.id
     today = get_today_str()
     ensure_daily_record(user_id)
+    raw_text = message.text.strip()
     
     conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     
-    if action == "act_quran_plus":
-        cursor.execute("SELECT quran FROM daily_progress WHERE user_id = ? AND date = ?", (user_id, today))
-        row = cursor.fetchone()
-        current = row[0] if row else ""
-        try:
-            num = int(current.split()[0]) + 1 if current and current.split()[0].isdigit() else 1
-        except:
-            num = 1
-        val_str = f"{num} аятов"
+    if act_type == "quran":
+        val_str = f"{raw_text} аятов" if raw_text.isdigit() else raw_text
         cursor.execute("UPDATE daily_progress SET quran = ? WHERE user_id = ? AND date = ?", (val_str, user_id, today))
-        notice = f"🌿 Добавлен аят! Всего: **{val_str}**"
-    elif action == "act_books_plus":
-        cursor.execute("UPDATE daily_progress SET books = books + 5 WHERE user_id = ? AND date = ?", (user_id, today))
-        notice = "📚 Добавлено **5** страниц книг."
-    elif action == "act_books_plus10":
-        cursor.execute("UPDATE daily_progress SET books = books + 10 WHERE user_id = ? AND date = ?", (user_id, today))
-        notice = "📚 Добавлено **10** страниц книг."
-    elif action == "act_steps_plus":
-        cursor.execute("UPDATE daily_progress SET steps = steps + 1000 WHERE user_id = ? AND date = ?", (user_id, today))
-        notice = "👣 Добавлено **1000** шагов."
-    elif action == "act_steps_plus5000":
-        cursor.execute("UPDATE daily_progress SET steps = steps + 5000 WHERE user_id = ? AND date = ?", (user_id, today))
-        notice = "👣 Добавлено **5000** шагов."
-    elif action == "act_sport_plus":
-        cursor.execute("UPDATE daily_progress SET sport = sport + 15 WHERE user_id = ? AND date = ?", (user_id, today))
-        notice = "⚽ Добавлено **15** минут спорта."
-    elif action == "act_sport_plus30":
-        cursor.execute("UPDATE daily_progress SET sport = sport + 30 WHERE user_id = ? AND date = ?", (user_id, today))
-        notice = "⚽ Добавлено **30** минут спорта."
+        notice = f"🌿 Чтение Корана зафиксировано: **{val_str}**"
     else:
-        conn.close()
-        await callback.answer()
-        return
+        try:
+            val = int(raw_text)
+        except ValueError:
+            await message.answer("Пожалуйста, введите корректное число.")
+            conn.close()
+            return
+            
+        if act_type == "books":
+            cursor.execute("UPDATE daily_progress SET books = books + ? WHERE user_id = ? AND date = ?", (val, user_id, today))
+            notice = f"📚 Записано: **{val}** страниц книг."
+        elif act_type == "steps":
+            cursor.execute("UPDATE daily_progress SET steps = steps + ? WHERE user_id = ? AND date = ?", (val, user_id, today))
+            notice = f"👣 Записано: **{val}** шагов."
+        elif act_type == "sport":
+            cursor.execute("UPDATE daily_progress SET sport = sport + ? WHERE user_id = ? AND date = ?", (val, user_id, today))
+            notice = f"⚽ Записано: **{val}** минут спорта."
 
-    conn.commit()
-    
-    # Получаем актуальную сводку дня для отрисовки в том же сообщении
     cursor.execute("""
         SELECT quran, books, steps, sport, tasbih, salawat, morning_adhkar, evening_adhkar,
                fajr_done, dhuhr_done, asr_done, maghrib_done, isha_done, tahajjud_done
@@ -826,7 +836,15 @@ async def process_activity_buttons(callback: types.CallbackQuery):
     conn.close()
     
     quran, books, steps, sport, tasbih, salawat, m_adhkar, e_adhkar, f, d, a, m, i, t = row if row else ("", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    data = await state.get_data()
+    prompt_id = data.get("prompt_msg_id")
+    await state.clear()
     
+    try:
+        await message.delete()
+    except Exception:
+        pass
+        
     summary_text = (
         f"{notice} 🤍\n\n"
         f"📊 **Сводка дня ({today})**\n\n"
@@ -838,14 +856,33 @@ async def process_activity_buttons(callback: types.CallbackQuery):
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 История поклонения", callback_data="history_archive")],
-        [InlineKeyboardButton(text="⛳ Внести еще активность", callback_data="add_activity_menu")]
+        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")],
+        [InlineKeyboardButton(text="🏠 Главное меню", callback_data="back_to_summary")]
     ])
     
-    try:
-        await callback.message.edit_text(summary_text, reply_markup=markup, parse_mode="Markdown")
-    except TelegramBadRequest:
-        pass
-    await callback.answer("Успешно записано! 🤍")
+    if prompt_id:
+        try:
+            await message.bot.edit_message_text(summary_text, chat_id=message.chat.id, message_id=prompt_id, reply_markup=markup, parse_mode="Markdown")
+            return
+        except Exception:
+            pass
+    await message.answer(summary_text, reply_markup=markup, parse_mode="Markdown")
+
+@router.message(ActivityForm.entering_quran)
+async def save_quran(message: types.Message, state: FSMContext):
+    await save_activity_and_cleanup(message, state, "quran")
+
+@router.message(ActivityForm.entering_books)
+async def save_books(message: types.Message, state: FSMContext):
+    await save_activity_and_cleanup(message, state, "books")
+
+@router.message(ActivityForm.entering_steps)
+async def save_steps(message: types.Message, state: FSMContext):
+    await save_activity_and_cleanup(message, state, "steps")
+
+@router.message(ActivityForm.entering_sport)
+async def save_sport(message: types.Message, state: FSMContext):
+    await save_activity_and_cleanup(message, state, "sport")
 
 # === АКТУАЛЬНЫЙ РЕЖИМ И ДЕЛИКАТНАЯ ПАУЗА ===
 @router.message(F.text.in_(["/mode", "⚙️ Актуальный режим"]))
@@ -1145,7 +1182,7 @@ async def background_scheduler(bot: Bot):
                             "• Помните о часе принятия дуа перед заходом солнца 🤍."
                         )
                         try:
-                            await bot.send_message(user_id, friday_text, parse_mode="Markdown")
+                            await bot.send_message(user_id, friday_text, reply_markup=markup, parse_mode="Markdown")
                             cursor.execute("INSERT OR IGNORE INTO notification_log (user_id, date, prayer_key, notification_type) VALUES (?, ?, 'friday_reminder', 'friday')", (user_id, today))
                             conn.commit()
                         except Exception as e:
@@ -1191,7 +1228,6 @@ async def background_scheduler(bot: Bot):
                     except ValueError:
                         continue
                     
-                    # 1. Уведомление за 5 минут до намаза (надежный минутный диапазон)
                     if current_time_minutes >= (p_total_minutes - 5) and current_time_minutes < p_total_minutes:
                         cursor.execute("""
                             SELECT 1 FROM notification_log 
@@ -1214,7 +1250,6 @@ async def background_scheduler(bot: Bot):
                             except Exception as e:
                                 logging.error(f"Failed to send 5min reminder: {e}")
 
-                    # 2. Наступление точного времени намаза
                     if current_time_minutes >= p_total_minutes and current_time_minutes < (p_total_minutes + 20):
                         cursor.execute("""
                             SELECT 1 FROM notification_log 
@@ -1232,7 +1267,6 @@ async def background_scheduler(bot: Bot):
                             except Exception as e:
                                 logging.error(f"Failed to send exact time reminder: {e}")
 
-                    # 3. Напоминание через 20 минут, если намаз не отмечен
                     if current_time_minutes >= (p_total_minutes + 20):
                         cursor.execute(f"SELECT {p_done_col} FROM daily_progress WHERE user_id = ? AND date = ?", (user_id, today))
                         p_val = cursor.fetchone()
