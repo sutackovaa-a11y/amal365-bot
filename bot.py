@@ -769,7 +769,8 @@ async def add_activity_menu(callback: types.CallbackQuery):
         "Выберите категорию для записи:"
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📖 Коран / 📚 Книги", callback_data="act_quran"), InlineKeyboardButton(text="👣 Шаги / ⚽ Спорт", callback_data="act_steps")],
+        [InlineKeyboardButton(text="📖 Коран", callback_data="act_quran"), InlineKeyboardButton(text="📚 Книги", callback_data="act_books")],
+        [InlineKeyboardButton(text="👣 Шаги", callback_data="act_steps"), InlineKeyboardButton(text="⚽ Спорт", callback_data="act_sport")],
         [InlineKeyboardButton(text="⬅️ К сводке", callback_data="back_to_summary")]
     ])
     try: await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
@@ -788,7 +789,7 @@ async def act_category_select(callback: types.CallbackQuery, state: FSMContext):
     title, prompt, target_state = titles[action]
     
     msg = await callback.message.edit_text(
-        f"{title}\n\n{prompt}\n\n*(Сообщение с подсказкой и ваш ответ автоматически удалятся, а сводка обновится)*",
+        f"{title}\n\n{prompt}",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад к выбору", callback_data="add_activity_menu")]]),
         parse_mode="Markdown"
     )
