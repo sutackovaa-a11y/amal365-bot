@@ -180,10 +180,6 @@ class OnboardForm(StatesGroup):
     entering_city = State()
 
 class ActivityForm(StatesGroup):
-    entering_quran = State()
-    entering_books = State()
-    entering_steps = State()
-    entering_sport = State()
     updating_city = State()
 
 router = Router()
@@ -763,103 +759,64 @@ async def add_activity_menu(callback: types.CallbackQuery):
         "Выберите категорию для записи:"
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📖 Коран", callback_data="act_quran"), InlineKeyboardButton(text="📚 Книги", callback_data="act_books")],
-        [InlineKeyboardButton(text="👣 Шаги", callback_data="act_steps"), InlineKeyboardButton(text="⚽ Спорт", callback_data="act_sport")],
+        [InlineKeyboardButton(text="📖 Коран (+1 аят)", callback_data="act_quran_plus")],
+        [InlineKeyboardButton(text="📚 Книги (+5 стр)", callback_data="act_books_plus"), InlineKeyboardButton(text="📚 Книги (+10 стр)", callback_data="act_books_plus10")],
+        [InlineKeyboardButton(text="👣 Шаги (+1000)", callback_data="act_steps_plus"), InlineKeyboardButton(text="👣 Шаги (+5000)", callback_data="act_steps_plus5000")],
+        [InlineKeyboardButton(text="⚽ Спорт (+15 мин)", callback_data="act_sport_plus"), InlineKeyboardButton(text="⚽ Спорт (+30 мин)", callback_data="act_sport_plus30")],
         [InlineKeyboardButton(text="⬅️ К сводке", callback_data="back_to_summary")]
     ])
     try: await callback.message.edit_text(text, reply_markup=markup, parse_mode="Markdown")
     except TelegramBadRequest: pass
     await callback.answer()
 
-# === ВВОД АКТИВНОСТИ БЕЗ ЗАСОРА ЧАТА ===
-@router.callback_query(F.data == "act_quran")
-async def act_quran(callback: types.CallbackQuery, state: FSMContext):
-    msg = await callback.message.edit_text("🌿 **Чтение Корана**\n\nПусть каждый прочитанный аят станет живым светом для Вашего сердца 📖.\n\nПоделитесь, какую суру или аяты Вам удалось прочитать сегодня?", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад к сводке", callback_data="back_to_summary")]]), parse_mode="Markdown")
-    await state.update_data(prompt_msg_id=msg.message_id)
-    await state.set_state(ActivityForm.entering_quran)
-    await callback.answer()
-
-@router.message(ActivityForm.entering_quran)
-async def save_quran(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
+# === ИНТЕРАКТИВНОЕ ВНЕСЕНИЕ АКТИВНОСТИ ЧЕРЕЗ КНОПКИ (БЕЗ ЗАСОРА ЧАТА) ===
+@router.callback_query(F.data.startswith("act_"))
+async def process_activity_buttons(callback: types.CallbackQuery):
+    action = callback.data
+    user_id = callback.from_user.id
     today = get_today_str()
     ensure_daily_record(user_id)
-    raw_text = message.text.strip()
     
-    if raw_text.isdigit():
-        quran_text = f"{raw_text} аятов"
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    
+    if action == "act_quran_plus":
+        cursor.execute("SELECT quran FROM daily_progress WHERE user_id = ? AND date = ?", (user_id, today))
+        row = cursor.fetchone()
+        current = row[0] if row else ""
+        try:
+            num = int(current.split()[0]) + 1 if current and current.split()[0].isdigit() else 1
+        except:
+            num = 1
+        val_str = f"{num} аятов"
+        cursor.execute("UPDATE daily_progress SET quran = ? WHERE user_id = ? AND date = ?", (val_str, user_id, today))
+        notice = f"🌿 Добавлен аят! Всего: **{val_str}**"
+    elif action == "act_books_plus":
+        cursor.execute("UPDATE daily_progress SET books = books + 5 WHERE user_id = ? AND date = ?", (user_id, today))
+        notice = "📚 Добавлено **5** страниц книг."
+    elif action == "act_books_plus10":
+        cursor.execute("UPDATE daily_progress SET books = books + 10 WHERE user_id = ? AND date = ?", (user_id, today))
+        notice = "📚 Добавлено **10** страниц книг."
+    elif action == "act_steps_plus":
+        cursor.execute("UPDATE daily_progress SET steps = steps + 1000 WHERE user_id = ? AND date = ?", (user_id, today))
+        notice = "👣 Добавлено **1000** шагов."
+    elif action == "act_steps_plus5000":
+        cursor.execute("UPDATE daily_progress SET steps = steps + 5000 WHERE user_id = ? AND date = ?", (user_id, today))
+        notice = "👣 Добавлено **5000** шагов."
+    elif action == "act_sport_plus":
+        cursor.execute("UPDATE daily_progress SET sport = sport + 15 WHERE user_id = ? AND date = ?", (user_id, today))
+        notice = "⚽ Добавлено **15** минут спорта."
+    elif action == "act_sport_plus30":
+        cursor.execute("UPDATE daily_progress SET sport = sport + 30 WHERE user_id = ? AND date = ?", (user_id, today))
+        notice = "⚽ Добавлено **30** минут спорта."
     else:
-        quran_text = raw_text
-
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE daily_progress SET quran = ? WHERE user_id = ? AND date = ?", (quran_text, user_id, today))
-    conn.commit()
-    conn.close()
-    
-    await state.clear()
-    try:
-        await message.delete()
-    except Exception:
-        pass
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT quran, books, steps, sport, tasbih, salawat, morning_adhkar, evening_adhkar,
-               fajr_done, dhuhr_done, asr_done, maghrib_done, isha_done, tahajjud_done
-        FROM daily_progress WHERE user_id = ? AND date = ?
-    """, (user_id, today))
-    row = cursor.fetchone()
-    conn.close()
-    quran, books, steps, sport, tasbih, salawat, m_adhkar, e_adhkar, f, d, a, m, i, t = row if row else ("", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    
-    summary_text = (
-        f"🌿 Машаллах! Чтение Корана зафиксировано: **{quran_text}**.\n\n"
-        f"📊 **Сводка дня ({today})**\n\n"
-        f"🕌 Намазы: Тахаджуд {'✅' if t else '⬜'} | Фаджр {'✅' if f else '⬜'} | Зухр {'✅' if d else '⬜'} | Аср {'✅' if a else '⬜'} | Магриб {'✅' if m else '⬜'} | Иша {'✅' if i else '⬜'}\n\n"
-        f"📖 Коран: {quran}\n"
-        f"📚 Книги: {books} стр. | 👣 Шаги: {steps} | ⚽ Спорт: {sport} мин.\n"
-        f"📿 Тасбих: {tasbih} | 🌹 Салават: {salawat}\n\n"
-        "Пусть Всевышний примет Ваш труд! 🤍"
-    )
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📜 История поклонения", callback_data="history_archive")],
-        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")]
-    ])
-    await message.answer(summary_text, parse_mode="Markdown")
-
-@router.callback_query(F.data == "act_books")
-async def act_books(callback: types.CallbackQuery, state: FSMContext):
-    msg = await callback.message.edit_text("📚 **Полезное чтение**\n\nСтремление к знанию возвышает душу.\n\nПодскажите, сколько страниц книги Вы прочитали сегодня? (введите число):", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад к сводке", callback_data="back_to_summary")]]), parse_mode="Markdown")
-    await state.update_data(prompt_msg_id=msg.message_id)
-    await state.set_state(ActivityForm.entering_books)
-    await callback.answer()
-
-@router.message(ActivityForm.entering_books)
-async def save_books(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    today = get_today_str()
-    ensure_daily_record(user_id)
-    try: val = int(message.text)
-    except ValueError:
-        await message.answer("Пожалуйста, введите число.")
+        conn.close()
+        await callback.answer()
         return
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE daily_progress SET books = books + ? WHERE user_id = ? AND date = ?", (val, user_id, today))
+
     conn.commit()
-    conn.close()
     
-    await state.clear()
-    try:
-        await message.delete()
-    except Exception:
-        pass
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
+    # Получаем актуальную сводку дня для отрисовки в том же сообщении
     cursor.execute("""
         SELECT quran, books, steps, sport, tasbih, salawat, morning_adhkar, evening_adhkar,
                fajr_done, dhuhr_done, asr_done, maghrib_done, isha_done, tahajjud_done
@@ -867,10 +824,11 @@ async def save_books(message: types.Message, state: FSMContext):
     """, (user_id, today))
     row = cursor.fetchone()
     conn.close()
+    
     quran, books, steps, sport, tasbih, salawat, m_adhkar, e_adhkar, f, d, a, m, i, t = row if row else ("", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
     
     summary_text = (
-        f"📚 Записано: **{val}** страниц книг. Пусть эти знания принесут баракат 🤍\n\n"
+        f"{notice} 🤍\n\n"
         f"📊 **Сводка дня ({today})**\n\n"
         f"🕌 Намазы: Тахаджуд {'✅' if t else '⬜'} | Фаджр {'✅' if f else '⬜'} | Зухр {'✅' if d else '⬜'} | Аср {'✅' if a else '⬜'} | Магриб {'✅' if m else '⬜'} | Иша {'✅' if i else '⬜'}\n\n"
         f"📖 Коран: {quran if quran else 'Не записано'}\n"
@@ -880,119 +838,14 @@ async def save_books(message: types.Message, state: FSMContext):
     )
     markup = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📜 История поклонения", callback_data="history_archive")],
-        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")]
+        [InlineKeyboardButton(text="⛳ Внести еще активность", callback_data="add_activity_menu")]
     ])
-    await message.answer(summary_text, parse_mode="Markdown")
-
-@router.callback_query(F.data == "act_steps")
-async def act_steps(callback: types.CallbackQuery, state: FSMContext):
-    msg = await callback.message.edit_text("👣 **Шаги и движение**\n\nЗабота о теле и здоровье — это проявление искренней благодарности за дарованный ресурс 🌿.\n\nУкажите количество пройденных шагов за день:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад к сводке", callback_data="back_to_summary")]]), parse_mode="Markdown")
-    await state.update_data(prompt_msg_id=msg.message_id)
-    await state.set_state(ActivityForm.entering_steps)
-    await callback.answer()
-
-@router.message(ActivityForm.entering_steps)
-async def save_steps(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    today = get_today_str()
-    ensure_daily_record(user_id)
-    try: val = int(message.text)
-    except ValueError:
-        await message.answer("Пожалуйста, введите число.")
-        return
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE daily_progress SET steps = steps + ? WHERE user_id = ? AND date = ?", (val, user_id, today))
-    conn.commit()
-    conn.close()
     
-    await state.clear()
     try:
-        await message.delete()
-    except Exception:
+        await callback.message.edit_text(summary_text, reply_markup=markup, parse_mode="Markdown")
+    except TelegramBadRequest:
         pass
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT quran, books, steps, sport, tasbih, salawat, morning_adhkar, evening_adhkar,
-               fajr_done, dhuhr_done, asr_done, maghrib_done, isha_done, tahajjud_done
-        FROM daily_progress WHERE user_id = ? AND date = ?
-    """, (user_id, today))
-    row = cursor.fetchone()
-    conn.close()
-    quran, books, steps, sport, tasbih, salawat, m_adhkar, e_adhkar, f, d, a, m, i, t = row if row else ("", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    
-    summary_text = (
-        f"👣 Записано: **{val}** шагов. Пусть движение приносит бодрость 🤍\n\n"
-        f"📊 **Сводка дня ({today})**\n\n"
-        f"🕌 Намазы: Тахаджуд {'✅' if t else '⬜'} | Фаджр {'✅' if f else '⬜'} | Зухр {'✅' if d else '⬜'} | Аср {'✅' if a else '⬜'} | Магриб {'✅' if m else '⬜'} | Иша {'✅' if i else '⬜'}\n\n"
-        f"📖 Коран: {quran if quran else 'Не записано'}\n"
-        f"📚 Книги: {books} стр. | 👣 Шаги: {steps} | ⚽ Спорт: {sport} мин.\n"
-        f"📿 Тасбих: {tasbih} | 🌹 Салават: {salawat}\n\n"
-        "Пусть Всевышний примет Ваш труд! 🤍"
-    )
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📜 История поклонения", callback_data="history_archive")],
-        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")]
-    ])
-    await message.answer(summary_text, parse_mode="Markdown")
-
-@router.callback_query(F.data == "act_sport")
-async def act_sport(callback: types.CallbackQuery, state: FSMContext):
-    msg = await callback.message.edit_text("⚽ **Мягкая активность и спорт**\n\nМягкая активность укрепляет дух и наполняет день энергией ✨.\n\nУкажите количество минут спорта или разминки:", reply_markup=InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⬅️ Назад к сводке", callback_data="back_to_summary")]]), parse_mode="Markdown")
-    await state.update_data(prompt_msg_id=msg.message_id)
-    await state.set_state(ActivityForm.entering_sport)
-    await callback.answer()
-
-@router.message(ActivityForm.entering_sport)
-async def save_sport(message: types.Message, state: FSMContext):
-    user_id = message.from_user.id
-    today = get_today_str()
-    ensure_daily_record(user_id)
-    try: val = int(message.text)
-    except ValueError:
-        await message.answer("Пожалуйста, введите число.")
-        return
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("UPDATE daily_progress SET sport = sport + ? WHERE user_id = ? AND date = ?", (val, user_id, today))
-    conn.commit()
-    conn.close()
-    
-    await state.clear()
-    try:
-        await message.delete()
-    except Exception:
-        pass
-        
-    conn = sqlite3.connect(DB_NAME)
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT quran, books, steps, sport, tasbih, salawat, morning_adhkar, evening_adhkar,
-               fajr_done, dhuhr_done, asr_done, maghrib_done, isha_done, tahajjud_done
-        FROM daily_progress WHERE user_id = ? AND date = ?
-    """, (user_id, today))
-    row = cursor.fetchone()
-    conn.close()
-    quran, books, steps, sport, tasbih, salawat, m_adhkar, e_adhkar, f, d, a, m, i, t = row if row else ("", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    
-    summary_text = (
-        f"⚽ Записано: **{val}** минут активности 🤍\n\n"
-        f"📊 **Сводка дня ({today})**\n\n"
-        f"🕌 Намазы: Тахаджуд {'✅' if t else '⬜'} | Фаджр {'✅' if f else '⬜'} | Зухр {'✅' if d else '⬜'} | Аср {'✅' if a else '⬜'} | Магриб {'✅' if m else '⬜'} | Иша {'✅' if i else '⬜'}\n\n"
-        f"📖 Коран: {quran if quran else 'Не записано'}\n"
-        f"📚 Книги: {books} стр. | 👣 Шаги: {steps} | ⚽ Спорт: {sport} мин.\n"
-        f"📿 Тасбих: {tasbih} | 🌹 Салават: {salawat}\n\n"
-        "Пусть Всевышний примет Ваш труд! 🤍"
-    )
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📜 История поклонения", callback_data="history_archive")],
-        [InlineKeyboardButton(text="⛳ Внести активность", callback_data="add_activity_menu")]
-    ])
-    await message.answer(summary_text, parse_mode="Markdown")
+    await callback.answer("Успешно записано! 🤍")
 
 # === АКТУАЛЬНЫЙ РЕЖИМ И ДЕЛИКАТНАЯ ПАУЗА ===
 @router.message(F.text.in_(["/mode", "⚙️ Актуальный режим"]))
@@ -1218,6 +1071,7 @@ async def background_scheduler(bot: Bot):
         try:
             now = get_local_now()
             current_time_str = now.strftime("%H:%M")
+            current_time_minutes = now.hour * 60 + now.minute
             today = now.strftime("%Y-%m-%d")
             today_dt = datetime.strptime(today, "%Y-%m-%d")
             is_friday = (now.weekday() == 4)
@@ -1332,14 +1186,13 @@ async def background_scheduler(bot: Bot):
                 for idx, (p_name, p_key, p_done_col) in enumerate(prayer_keys):
                     p_time_str = prayer_times.get(p_name, "12:00")
                     try:
-                        p_dt = datetime.strptime(p_time_str, "%H:%M")
+                        p_h, p_m = map(int, p_time_str.split(":"))
+                        p_total_minutes = p_h * 60 + p_m
                     except ValueError:
                         continue
                     
-                    minus_5 = (p_dt - timedelta(minutes=5)).strftime("%H:%M")
-                    plus_20 = (p_dt + timedelta(minutes=20)).strftime("%H:%M")
-                    
-                    if current_time_str == minus_5:
+                    # 1. Уведомление за 5 минут до намаза (надежный минутный диапазон)
+                    if current_time_minutes >= (p_total_minutes - 5) and current_time_minutes < p_total_minutes:
                         cursor.execute("""
                             SELECT 1 FROM notification_log 
                             WHERE user_id = ? AND date = ? AND prayer_key = ? AND notification_type = '5min'
@@ -1361,7 +1214,8 @@ async def background_scheduler(bot: Bot):
                             except Exception as e:
                                 logging.error(f"Failed to send 5min reminder: {e}")
 
-                    if current_time_str == p_time_str:
+                    # 2. Наступление точного времени намаза
+                    if current_time_minutes >= p_total_minutes and current_time_minutes < (p_total_minutes + 20):
                         cursor.execute("""
                             SELECT 1 FROM notification_log 
                             WHERE user_id = ? AND date = ? AND prayer_key = ? AND notification_type = 'exact'
@@ -1373,12 +1227,13 @@ async def background_scheduler(bot: Bot):
                             ])
                             try:
                                 await bot.send_message(user_id, exact_text, reply_markup=markup, parse_mode="Markdown")
-                                cursor.execute("INSERT OR IGNORE INTO notification_log (user_id, date, prayer_key, notification_type) VALUES (?, ?, ?, 'exact')", (user_id, today, p_key))
+                                cursor.execute("INSERT OR IGNORE INTO notification_log (user_id, date, prayer_key, notification_type) VALUES (?, ?, 'exact')", (user_id, today, p_key))
                                 conn.commit()
                             except Exception as e:
                                 logging.error(f"Failed to send exact time reminder: {e}")
 
-                    if current_time_str == plus_20:
+                    # 3. Напоминание через 20 минут, если намаз не отмечен
+                    if current_time_minutes >= (p_total_minutes + 20):
                         cursor.execute(f"SELECT {p_done_col} FROM daily_progress WHERE user_id = ? AND date = ?", (user_id, today))
                         p_val = cursor.fetchone()
                         if p_val and p_val[0] == 0:
@@ -1393,7 +1248,7 @@ async def background_scheduler(bot: Bot):
                                 ])
                                 try:
                                     await bot.send_message(user_id, repeat_text, reply_markup=markup, parse_mode="Markdown")
-                                    cursor.execute("INSERT OR IGNORE INTO notification_log (user_id, date, prayer_key, notification_type) VALUES (?, ?, ?, 'plus20')", (user_id, today, p_key))
+                                    cursor.execute("INSERT OR IGNORE INTO notification_log (user_id, date, prayer_key, notification_type) VALUES (?, ?, 'plus20')", (user_id, today, p_key))
                                     conn.commit()
                                 except Exception as e:
                                     logging.error(f"Failed to send repeat reminder: {e}")
